@@ -1,0 +1,22 @@
+{
+  "name": "ai-game-companion",
+  "version": "0.2.0",
+  "private": true,
+  "description": "게임 화면과 지난 이야기를 함께 기억하는 AI 동료",
+  "main": "src/main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "node scripts/run.cjs",
+    "test": "node scripts/run.cjs --test",
+    "smoke": "node scripts/run.cjs --smoke",
+    "evaluate": "node scripts/run.cjs --evaluate"
+  },
+  "devDependencies": {
+    "electron": "44.5.1"
+  },
+  "dependencies": {
+    "koffi": "3.3.2"
+  }
+}

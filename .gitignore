@@ -1,0 +1,9 @@
+node_modules/
+.local/
+*.mp4
+*.webm
+key.enc
+*.sqlite*
+*.log
+.env*
+dist/
