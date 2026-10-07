@@ -9,6 +9,7 @@ const { ROUTE_STEPS, PLAN_STATES, TRANSITIONS, text, calculateFleet, frameDiffer
 const provider = require('./provider.cjs');
 const { EXPERIENCE_STATES, EXPERIENCE_TRANSITIONS, OUTCOMES } = require('./learning.cjs');
 const buddy = require('./buddy.cjs');
+const reactions = require('./reactions.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'companion', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 const smoke = process.argv.includes('--smoke');
@@ -18,13 +19,13 @@ if (!smoke && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', async (_event, args) => { if (win && !win.isDestroyed()) { if (args.includes('--overlay')) { if (!overlayInteractive) rememberForeground(); await setCompact(true); await setOverlayInput(false); } else if (compact) await setOverlayInput(true); else { win.restore(); win.show(); win.focus(); } } });
 let win, store, directory, activeWorld, referenceVideo, selectedSource, job, fullBounds, overlayBounds, fullMaximized;
 let overlayInteractive = false;
-let buddyRegions = [], buddyMouseActive = false, sessionStarted = 0, checkInIndex = 0, presenceSpeech = [];
+let buddyRegions = [], buddyMouseActive = false, captureContinuity = 0, nextAutomaticAt = 0, silenceCount = 0;
 let nativeWindows, previousForeground = 0n, returningForeground = false, focusRevision = 0, overlayTransitions = 0;
 const shortcuts = { chat: null, visibility: null };
 let referenceRevision = randomUUID();
 let observing = false, compact = false, composerBusy = false, epoch = 0, lastSaved = 0, lastAnalysis = 0, lastInteraction = 0, lastSignature, frames = [], modelList = [], remoteBlocked = false;
 let dismissedEvents = new Set();
-let settings = { model: '', analysisConsent: false, autoAnalyze: false, ambientChat: true, maxRequests: 20, analysisInterval: 30, mode: 'quiet', profile: { name: '동료', style: 'calm', tone: 'casual', preferences: '' } };
+let settings = { model: '', analysisConsent: false, autoAnalyze: false, maxRequests: 20, analysisInterval: 30, mode: 'quiet', profile: { name: '동료', style: 'calm', tone: 'casual', preferences: '' } };
 const referenceName = 'Anno 1800 2026-10-06 22-25-26.mp4';
 const referenceMarks = [{ x: .357, y: .666, width: .07, height: .169, label: '① 선택한 교역소' }, { x: .699, y: .894, width: .123, height: .034, label: '② 홉 재고 · 영상 당시' }, { x: .086, y: .96, width: .035, height: .04, label: '③ 무역로 메뉴 · 기본 단축키 T' }];
 
@@ -110,18 +111,6 @@ function updateBuddyMouse() {
     win.setIgnoreMouseEvents(!active, { forward: true });
   }
 }
-function maybeCheckIn() {
-  if (!win || win.isDestroyed() || !compact) return;
-  const now = Date.now();
-  presenceSpeech = presenceSpeech.filter(time => now - time < 600000);
-  const turns = store.context(activeWorld).filter(r => r.kind === 'answer' && (!r.payload.automatic || r.payload.delivered)).map(r => Date.parse(r.created_at));
-  const recentSpeech = [...presenceSpeech, ...turns];
-  if (!buddy.canCheckIn({ visible: win.isVisible(), interactive: overlayInteractive, mode: settings.mode, enabled: settings.ambientChat,
-    observing, source: selectedSource?.id === 'video' ? 'video' : 'window', blocked: remoteBlocked, busy: composerBusy || !!job,
-    capturedAt: frames.at(-1)?.capturedAt, sessionStarted, lastInteraction, lastSpeech: Math.max(sessionStarted, ...recentSpeech), recentSpeech, count: checkInIndex }, now)) return;
-  presenceSpeech.push(now);
-  emit('buddy:checkin', { worldId: activeWorld, sessionId: selectedSource.sessionId, text: buddy.checkInText(settings.profile, checkInIndex++) });
-}
 async function setOverlayInput(active, visible = true, returnToGame = true) {
   if (!compact) return;
   overlayTransitions++;
@@ -184,7 +173,7 @@ function registerShortcut(candidates, callback) {
 }
 function stopObservation(reason = '사용자가 관찰을 중지했어요.') {
   if (observing) store.add(activeWorld, 'session', 'app', { text: reason, status: 'stopped' });
-  observing = false; selectedSource = null; frames = []; lastSignature = null; dismissedEvents.clear(); presenceSpeech = []; sessionStarted = 0; composerBusy = false; epoch++;
+  observing = false; selectedSource = null; frames = []; lastSignature = null; dismissedEvents.clear(); captureContinuity++; nextAutomaticAt = 0; silenceCount = 0; composerBusy = false; epoch++;
   job?.controller.abort();
   emit('capture:stop', reason);
 }
@@ -202,7 +191,7 @@ function saveFrame(frame) {
   const existing = store.records(frame.worldId, 10).find(r => r.kind === 'frame' && r.payload.capturedAt === frame.capturedAt);
   if (existing) return existing;
   return store.frame(frame.worldId, frame.bytes, { source: frame.source, width: frame.size.width, height: frame.size.height, capturedAt: frame.capturedAt,
-    videoTime: frame.videoTime, referenceName: frame.source === 'video' ? path.basename(referenceVideo || referenceName) : null, window: frame.window });
+    videoTime: frame.videoTime, sessionId: frame.sessionId, continuity: frame.continuity, referenceName: frame.source === 'video' ? path.basename(referenceVideo || referenceName) : null, window: frame.window });
 }
 async function runAnalysis(question, automatic = false, evidenceId = null) {
   if (job) {
@@ -216,8 +205,15 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
   if (usedToday() >= settings.maxRequests) { remoteBlocked = true; throw new Error('오늘 앱 요청 한도에 도달했어요. 로컬 안내와 기억은 계속 사용할 수 있어요.'); }
   const world = store.world(activeWorld), contextEpoch = epoch;
   const latest = frames.at(-1);
-  if (latest && Date.now() - Date.parse(latest.capturedAt) < 10000) saveFrame(latest);
-  const { evidence, recent, memories } = store.analysisContext(world.id, question || world.goal, evidenceId);
+  const pair = automatic && settings.mode === 'together' ? reactions.comparisonFrames(frames) : null;
+  if (automatic && settings.mode === 'together' && !pair) return null;
+  if (!pair && latest && Date.now() - Date.parse(latest.capturedAt) < 10000) saveFrame(latest);
+  const { evidence: contextEvidence, recent, memories } = automatic && settings.mode === 'together' ? store.promptContext(world.id, world.goal) : store.analysisContext(world.id, question || world.goal, evidenceId);
+  let evidence = contextEvidence;
+  if (pair) {
+    try { evidence = pair.map(frame => store.evidence(world.id, saveFrame(frame).id)); }
+    catch (error) { remoteBlocked = true; emit('analysis:error', error.message); throw error; }
+  }
   const controller = new AbortController();
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
@@ -233,8 +229,10 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
       if (!stillValid) throw new Error('월드나 계획이 바뀌어 이전 답변을 폐기했어요.');
       remoteBlocked = false;
       const sampleStable = latest && frames.at(-1) && frameDifference(latest.signature, frames.at(-1).signature) <= 0.075;
-      const suppressed = automatic ? (composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(result.answer.event_key) ? 'dismissed' : proactiveDecision(result.answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: [...store.context(world.id), ...presenceSpeech.map(time => ({ kind: 'answer', created_at: new Date(time).toISOString(), payload: { automatic: true, delivered: true } }))] })) : null;
-      const record = store.saveAnswer(world.id, 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...memories.map(r => r.id), ...conversation(recent).map(r => r.id)] });
+      const suppressed = automatic ? (!win.isVisible() || win.isMinimized() ? 'hidden' : composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(result.answer.event_key) ? 'dismissed' : proactiveDecision(result.answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: store.context(world.id), live: observing ? frames.at(-1) : null })) : null;
+      if (automatic) { silenceCount = suppressed ? silenceCount + 1 : 0; nextAutomaticAt = Date.now() + reactions.nextDelay(settings.analysisInterval, silenceCount); }
+      const observedAt = automatic && settings.mode === 'together' ? evidence.find(frame => frame.id === result.answer.observed_change?.after_evidence_id)?.payload.capturedAt || null : null;
+      const record = store.saveAnswer(world.id, 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, reaction_observed_at: observedAt, observation_session: automatic ? latest?.sessionId : null, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...memories.map(r => r.id), ...conversation(recent).map(r => r.id)] });
       emit('data:changed', snapshot());
       if (!suppressed) emit('answer:ready', publicRecord(record));
       return publicRecord(record);
@@ -264,7 +262,6 @@ app.whenReady().then(async () => {
   if (fs.existsSync(settingsFile)) {
     try { const saved = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); settings.model = text(saved.model || '', 150); settings.analysisConsent = saved.analysisConsent === true; settings.autoAnalyze = saved.autoAnalyze === true; settings.maxRequests = Number.isInteger(saved.maxRequests) && saved.maxRequests >= 1 && saved.maxRequests <= 200 ? saved.maxRequests : 20;
       if ([15, 30, 60, 120].includes(saved.analysisInterval)) settings.analysisInterval = saved.analysisInterval;
-      settings.ambientChat = saved.ambientChat !== false;
       if (['quiet', 'watch', 'together'].includes(saved.mode)) settings.mode = saved.mode;
       if (saved.profile) settings.profile = companionProfile(saved.profile);
       if (store.worlds().some(w => w.id === saved.activeWorld)) activeWorld = saved.activeWorld;
@@ -315,8 +312,7 @@ app.whenReady().then(async () => {
   shortcuts.chat = registerShortcut(['CommandOrControl+Shift+G', 'CommandOrControl+Shift+F8'], toggleChat);
   shortcuts.visibility = registerShortcut(['CommandOrControl+Shift+H', 'CommandOrControl+Shift+F9'], toggleOverlayVisibility);
   const buddyMouseTimer = setInterval(updateBuddyMouse, 80);
-  const checkInTimer = setInterval(maybeCheckIn, 30000);
-  win.on('closed', () => { clearInterval(buddyMouseTimer); clearInterval(checkInTimer); });
+  win.on('closed', () => { clearInterval(buddyMouseTimer); });
 
   handle('bootstrap', () => snapshot());
   handle('companion:save', input => {
@@ -324,9 +320,7 @@ app.whenReady().then(async () => {
     const mode = input.mode === undefined ? settings.mode : input.mode;
     if (!['quiet', 'watch', 'together'].includes(mode)) throw new Error('함께하는 방식을 확인해주세요.');
     if (mode === 'watch' && !store.world(activeWorld).goal) throw new Error('목표 감시를 켜기 전에 기억할 목표를 적어주세요.');
-    if (input.ambientChat !== undefined && typeof input.ambientChat !== 'boolean') throw new Error('짧은 인사 설정을 확인해주세요.');
-    if (input.ambientChat !== undefined) settings.ambientChat = input.ambientChat;
-    settings.profile = profile; settings.mode = mode;
+    settings.profile = profile; settings.mode = mode; nextAutomaticAt = 0; silenceCount = 0;
     epoch++; job?.controller.abort(); saveSettings(); return snapshot();
   });
   handle('chat:active', input => { composerBusy = input === true; lastInteraction = Date.now(); return true; });
@@ -432,27 +426,29 @@ app.whenReady().then(async () => {
       if (!source) throw new Error('선택한 창을 찾을 수 없어요.');
       selectedSource = { id, name: source.name };
     }
-    selectedSource.sessionId = randomUUID(); observing = true; sessionStarted = Date.now(); checkInIndex = 0; lastSaved = 0; lastAnalysis = Date.now(); remoteBlocked = false;
+    selectedSource.sessionId = randomUUID(); observing = true; lastSaved = 0; lastAnalysis = Date.now(); remoteBlocked = false;
     store.add(activeWorld, 'session', 'app', { text: selectedSource.id === 'video' ? '첨부 영상 리플레이 시작 · 실시간 관찰 아님' : `창 관찰 시작: ${selectedSource.name}`, status: 'started' });
     return snapshot();
   });
   handle('capture:stop', () => { stopObservation(); return snapshot(); });
-  handle('capture:gap', input => { if (observing) { store.add(activeWorld, 'gap', 'app', { text: text(input, 200) }); if (job?.automatic) job.controller.abort(); } return true; });
+  handle('capture:gap', input => { if (observing) { captureContinuity++; store.add(activeWorld, 'gap', 'app', { text: text(input, 200) }); if (job?.automatic) job.controller.abort(); } return true; });
   handle('capture:frame', async input => {
     if (!observing || input.worldId !== activeWorld || input.sessionId !== selectedSource.sessionId) return null;
     const { bytes, size, signature } = decodeFrame(input.image);
-    if (signature.every(n => n < 3)) { if (job?.automatic) job.controller.abort(); return { gap: true }; }
+    if (signature.every(n => n < 3)) { captureContinuity++; if (job?.automatic) job.controller.abort(); return { gap: true }; }
     const source = selectedSource.id === 'video' ? 'video' : 'window';
     const videoTime = source === 'video' && typeof input.videoTime === 'number' && Number.isFinite(input.videoTime) && input.videoTime >= 0 ? input.videoTime : null;
-    const frame = { bytes, size, signature, worldId: activeWorld, source, videoTime, window: source === 'window' ? selectedSource.name : null, capturedAt: new Date().toISOString() };
+    const frame = { bytes, size, signature, worldId: activeWorld, sessionId: selectedSource.sessionId, continuity: captureContinuity, source, videoTime, window: source === 'window' ? selectedSource.name : null, capturedAt: new Date().toISOString() };
     frames.push(frame); frames = frames.slice(-60);
     const changed = frameDifference(signature, lastSignature) > 0.075;
     lastSignature = signature;
     let record = null;
     // ponytail: whole-frame brightness differences include camera motion; use game-specific regions after measured misses.
     if (input.force === true || (changed && Date.now() - lastSaved >= 15000)) { record = saveFrame(frame); lastSaved = Date.now(); }
-    if (settings.autoAnalyze && settings.analysisConsent && !remoteBlocked && !composerBusy && Date.now() - lastAnalysis >= settings.analysisInterval * 1000 && Date.now() - lastInteraction >= 15000 && !job) {
-      runAnalysis('지금 함께 보고 있는 장면에서 새로 반응할 일이 있는지 판단하세요. 말할 필요가 없으면 침묵하세요.', true).catch(() => {});
+    if (settings.autoAnalyze && settings.mode !== 'quiet' && reactions.automaticAdmission({ settings, source, visible: win.isVisible() && !win.isMinimized(), busy: composerBusy || !!job, blocked: remoteBlocked,
+      lastAnalysis, lastInteraction, nextAutomaticAt, pair: settings.mode === 'together' ? reactions.comparisonFrames(frames) : null,
+      records: store.context(activeWorld), goal: store.world(activeWorld).goal })) {
+      runAnalysis('전후 기록 화면에서 직접 확인한 새로운 게임 변화에만 짧게 반응하세요. 인사·조언·질문을 붙이지 말고, 의미 있는 변화가 없으면 침묵하세요.', true).catch(() => {});
     }
     return { capturedAt: frame.capturedAt, record: record ? publicRecord(record) : null };
   });
@@ -499,7 +495,7 @@ app.whenReady().then(async () => {
       finally { clearTimeout(timeout); if (job === current) job = null; fs.rmSync(testFile, { force: true }); }
     }
     epoch++; job?.controller.abort(); settings = { ...settings, model: nextModel, analysisConsent: input.analysisConsent === true, autoAnalyze: input.autoAnalyze === true, maxRequests, analysisInterval };
-    remoteBlocked = false;
+    remoteBlocked = false; nextAutomaticAt = 0; silenceCount = 0;
     if (!settings.analysisConsent) { job?.controller.abort(); remoteBlocked = true; }
     saveSettings(); return snapshot();
   });

@@ -64,7 +64,8 @@ function validateAnswer(answer, evidence) {
   const summary = text(answer.summary), eventKey = text(answer.event_key, 150);
   if (answer.should_speak && !summary) throw new Error('동료의 답변이 비어 있어요.');
   const learning_proposals = require('./learning.cjs').validateProposals(answer.learning_proposals, evidence);
-  return { summary, should_speak: answer.should_speak, event_type: answer.event_type, event_key: eventKey, focus_busy: answer.focus_busy, goal_related: answer.goal_related, facts, hypotheses: strings('hypotheses'), missing_information: strings('missing_information'), suggestions: strings('suggestions'), memory_proposals: strings('memory_proposals'), next_action: text(answer.next_action, 1000), annotations, learning_proposals };
+  const observed_change = require('./reactions.cjs').validateChange(answer.observed_change, evidence);
+  return { summary, should_speak: answer.should_speak, event_type: answer.event_type, event_key: eventKey, focus_busy: answer.focus_busy, goal_related: answer.goal_related, facts, hypotheses: strings('hypotheses'), missing_information: strings('missing_information'), suggestions: strings('suggestions'), memory_proposals: strings('memory_proposals'), next_action: text(answer.next_action, 1000), annotations, learning_proposals, observed_change };
 }
 function gameLabel(game) { return game === 'anno1800' ? 'Anno 1800' : game === 'factorio' ? 'Factorio' : game; }
 function companionProfile(input) {
@@ -74,16 +75,22 @@ function companionProfile(input) {
   return { name, style: input.style, tone: input.tone, preferences };
 }
 function conversation(records) {
-  return records.filter(r => r.kind === 'answer' && r.payload.summary && (!r.payload.automatic || r.payload.delivered === true)).slice(0, 12).reverse().map(r => ({ id: r.id, question: r.payload.automatic ? null : r.payload.question, reply: r.payload.summary, source: r.source, time: r.created_at }));
+  return records.filter(r => r.kind === 'answer' && r.payload.summary && (!r.payload.automatic || r.payload.delivered === true)).slice(0, 12).reverse().map(r => ({ id: r.id, question: r.payload.automatic ? null : r.payload.question, reply: r.payload.summary, source: r.source, time: r.created_at, observed_at: r.payload.reaction_observed_at || null }));
 }
-function proactiveDecision(answer, { mode, goal, status, sampleStable = true, evidence, records, now = Date.now() }) {
+function proactiveDecision(answer, { mode, goal, status, sampleStable = true, evidence, records, live, now = Date.now() }) {
   if (mode === 'quiet') return 'quiet-mode';
   if (!answer.should_speak || answer.event_type === 'quiet') return 'nothing-new';
   if (answer.focus_busy) return 'focused-play';
   if (!sampleStable) return 'scene-changed';
   if (!answer.event_key) return 'missing-event';
-  const current = new Set(evidence.filter(f => f.source === 'window' && now - Date.parse(f.payload.capturedAt) >= 0 && now - Date.parse(f.payload.capturedAt) < 15000).map(f => f.id));
-  if (!answer.facts.some(f => current.has(f.evidence_id))) return 'no-current-evidence';
+  if (require('./reactions.cjs').hasAdvice(answer)) return 'unsolicited-advice';
+  if (mode === 'together') {
+    const reason = require('./reactions.cjs').reactionDecision(answer, { evidence, live, now });
+    if (reason) return reason;
+  } else {
+    const current = new Set(evidence.filter(f => f.source === 'window' && now - Date.parse(f.payload.capturedAt) >= 0 && now - Date.parse(f.payload.capturedAt) < 15000).map(f => f.id));
+    if (!answer.facts.some(f => current.has(f.evidence_id))) return 'no-current-evidence';
+  }
   if (answer.goal_related && ['cancelled', 'deferred'].includes(status)) return 'inactive-plan';
   if (mode === 'watch' && (!goal || !answer.goal_related || !['help', 'follow_up'].includes(answer.event_type))) return 'outside-watch';
   const turns = records.filter(r => r.kind === 'answer' && (!r.payload.automatic || r.payload.delivered));

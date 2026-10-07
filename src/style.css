@@ -69,3 +69,5 @@ body.compact #toast{bottom:125px;z-index:35}
 
 #companion-dialog{max-height:calc(100vh - 32px);overflow:auto}
 .buddy-evidence>span{line-height:1.6}.buddy-evidence small{display:block;margin-top:3px;font-size:9px;color:#83957b}
+.buddy-dock[data-mood="speaking"][data-reaction="setback"] .buddy-mouth{transform:rotate(180deg);top:40px}
+.buddy-dock[data-mood="speaking"][data-reaction="setback"] .buddy-hand.right{transform:rotate(-20deg)}

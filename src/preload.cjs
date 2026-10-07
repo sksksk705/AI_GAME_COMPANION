@@ -4,7 +4,7 @@ requests.push('window:input', 'window:action');
 requests.push('experience:create', 'experience:update');
 requests.push('record:get');
 requests.push('window:regions');
-const events = ['capture:stop', 'capture:now', 'chat:focus', 'window:changed', 'window:error', 'data:changed', 'answer:ready', 'analysis:error', 'buddy:checkin'];
+const events = ['capture:stop', 'capture:now', 'chat:focus', 'window:changed', 'window:error', 'data:changed', 'answer:ready', 'analysis:error'];
 contextBridge.exposeInMainWorld('companion', {
   call: (name, input) => { if (!requests.includes(name)) throw new Error('허용되지 않은 요청'); return ipcRenderer.invoke(name, input); },
   on: (name, callback) => {

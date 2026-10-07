@@ -9,6 +9,7 @@ const video = $('#game-video');
 const canvas = document.createElement('canvas');
 const context = canvas.getContext('2d', { alpha: false });
 const labels = { user: '사용자 진술', video: '첨부 영상', window: '창 캡처', model: 'AI 해석 · 확인 필요', guide: '로컬 가이드', provider: 'API 요청', app: '앱 상태' };
+const reactionTime = value => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value));
 const time = value => value ? new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)) : '시각 미확인';
 const videoTime = value => `${String(Math.floor((value || 0) / 60)).padStart(2, '0')}:${String(Math.floor((value || 0) % 60)).padStart(2, '0')}`;
 function node(tag, className, content) { const element = document.createElement(tag); if (className) element.className = className; if (content != null) element.textContent = content; return element; }
@@ -64,21 +65,22 @@ function renderBuddy() {
   $('#buddy-button').setAttribute('aria-label', state.overlay.interactive ? '대화를 접고 게임으로 돌아가기' : `${profile.name}와 대화하기`);
   $('#buddy-button').setAttribute('aria-expanded', String(state.overlay.interactive));
   $('#buddy-button').title = state.overlay.interactive ? '게임으로 돌아가기 · Esc' : `클릭해서 이야기하기 · ${shortcutLabel(state.overlay.shortcuts.chat)}`;
-    $('#buddy-thinking').hidden = !thinking;
+  $('#buddy-thinking').hidden = !thinking;
   if (buddySpeech?.record && !state.records.some(r => r.id === buddySpeech.id && (!r.payload.automatic || r.payload.delivered === true))) clearBuddySpeech();
-  if (buddySpeech?.automatic && (state.settings.mode === 'quiet' || (buddySpeech.ambient && (state.settings.ambientChat === false || !observing || replay)))) clearBuddySpeech();
+  if (buddySpeech?.automatic && (state.settings.mode === 'quiet' || (buddySpeech.record?.payload.observation_session && (!observing || buddySpeech.record.payload.observation_session !== state.observation.sessionId)))) clearBuddySpeech();
   $('#buddy-dock').dataset.mood = thinking ? 'thinking' : buddySpeech ? 'speaking' : observing ? 'watching' : 'idle';
+  $('#buddy-dock').dataset.reaction = buddySpeech?.record?.payload.observed_change?.kind || '';
   $('#buddy-bubble').hidden = !buddySpeech || !state.compact || state.overlay.interactive;
   $('#buddy-unread').hidden = !buddySpeech || state.overlay.interactive;
   $('#buddy-preview').replaceChildren(); $('#buddy-preview').hidden = true;
   if (buddySpeech) {
-    $('#buddy-speech-kind').textContent = buddySpeech.ambient ? '짧은 인사' : buddySpeech.automatic ? '먼저 건넨 말' : buddySpeech.record?.source === 'guide' ? '로컬 안내' : '대화';
+    $('#buddy-speech-kind').textContent = buddySpeech.record?.payload.reaction_observed_at ? `게임 반응 · ${reactionTime(buddySpeech.record.payload.reaction_observed_at)} 장면` : buddySpeech.automatic ? '먼저 건넨 말' : buddySpeech.record?.source === 'guide' ? '로컬 안내' : '대화';
     const characters = Array.from(buddySpeech.text || '');
     $('#buddy-speech-text').textContent = characters.slice(0, 220).join('') + (characters.length > 220 ? '…' : '');
     const answer = buddySpeech.record;
     if (answer) {
       const marks = answer.payload.annotations || [], ids = [...marks.map(m => m.evidence_id), ...(answer.payload.facts || []).map(f => f.evidence_id)];
-      const frame = state.records.find(r => r.kind === 'frame' && r.payload.available && ids.includes(r.id));
+      const frame = state.records.find(r => r.kind === 'frame' && r.payload.available && r.id === answer.payload.observed_change?.after_evidence_id) || state.records.find(r => r.kind === 'frame' && r.payload.available && ids.includes(r.id));
       if (frame) {
         const mark = marks.find(m => m.evidence_id === frame.id), preview = node('button', 'buddy-evidence');
         preview.setAttribute('aria-label', '이 말의 근거 화면 확대');
@@ -285,7 +287,7 @@ function renderMessages() {
     const answer = record.payload;
     const user = node('div', 'user-bubble', answer.question);
     const bubble = node('div', 'answer-bubble');
-    bubble.append(node('span', 'answer-source', `${record.source === 'model' ? (answer.automatic ? '먼저 건넨 말' : '대화') : 'Anno 예제 · 로컬 안내'} · ${time(record.created_at)}`), node('div', 'answer-summary', answer.summary));
+    bubble.append(node('span', 'answer-source', `${record.source === 'model' ? (answer.reaction_observed_at ? `게임 반응 · ${reactionTime(answer.reaction_observed_at)} 장면` : answer.automatic ? '먼저 건넨 말' : '대화') : 'Anno 예제 · 로컬 안내'} · ${time(record.created_at)}`), node('div', 'answer-summary', answer.summary));
     const marks=answer.annotations || [], references=[...new Set([...(answer.facts||[]).map(f=>f.evidence_id),...marks.map(m=>m.evidence_id)])];
     const visuals=node('div','answer-visuals');
     for(const id of references.slice(0,2)){
@@ -499,9 +501,9 @@ document.querySelectorAll('[data-intent]').forEach(button => { button.onclick = 
   if (button.dataset.intent === 'setup') $('#guide-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }); });
 $('#companion-mode').onchange = safe(async event => { const mode = event.target.value; try { render(await call('companion:save', { mode })); } catch (error) { event.target.value = state.settings.mode; throw error; } });
-$('#edit-companion').onclick = () => { const form = $('#companion-form'); for (const [key, value] of Object.entries(state.settings.profile)) form.elements[key].value = value; form.elements.mode.value = state.settings.mode; form.elements.ambientChat.checked = state.settings.ambientChat !== false; $('#companion-dialog').showModal(); };
+$('#edit-companion').onclick = () => { const form = $('#companion-form'); for (const [key, value] of Object.entries(state.settings.profile)) form.elements[key].value = value; form.elements.mode.value = state.settings.mode; $('#companion-dialog').showModal(); };
 $('#close-companion-dialog').onclick = () => $('#companion-dialog').close();
-$('#companion-form').onsubmit = safe(async event => { event.preventDefault(); const profile = Object.fromEntries(new FormData(event.target)); const mode = profile.mode; delete profile.mode; delete profile.ambientChat; render(await call('companion:save', { profile, mode, ambientChat: event.target.elements.ambientChat.checked })); $('#companion-dialog').close(); toast('우리 대화의 분위기를 저장했어요.'); });
+$('#companion-form').onsubmit = safe(async event => { event.preventDefault(); const profile = Object.fromEntries(new FormData(event.target)); const mode = profile.mode; delete profile.mode; render(await call('companion:save', { profile, mode })); $('#companion-dialog').close(); toast('우리 대화의 분위기를 저장했어요.'); });
 $('#buddy-analysis-settings').onclick = () => { $('#companion-dialog').close(); setView('settings'); };
 $('#buddy-button').onclick = safe(async () => { if (state.overlay.interactive) render(await call('window:input', false)); else await openBuddyChat(); });
 $('#buddy-speech').onclick = $('#buddy-read').onclick = safe(openBuddyChat);
@@ -613,10 +615,6 @@ window.companion.on('capture:stop', () => { stopRenderer(); if (state) { state.o
 window.companion.on('capture:now', () => captureFrame(true).catch(error => toast(error.message)));
 window.companion.on('data:changed', render);
 window.companion.on('answer:ready', record => { if (record.world_id === state?.activeWorld) announceAnswer(record); });
-window.companion.on('buddy:checkin', message => {
-  if (!state?.compact || state.overlay.interactive || state.settings.mode !== 'together' || state.settings.ambientChat === false || !state.observation.observing || message.worldId !== state.activeWorld || message.sessionId !== state.observation.sessionId || $('#source-kind').value === 'video') return;
-  showBuddySpeech({ id: `presence-${Date.now()}`, worldId: message.worldId, text: message.text, ambient: true, automatic: true });
-});
 window.companion.on('window:changed', next => { if (next.compact && !next.overlay.interactive) $('#toast').hidden = true; render(next); });
 window.companion.on('window:error', toast);
 window.companion.on('chat:focus', () => { setView('play'); $('#question').focus(); });

@@ -38,7 +38,7 @@ function frameRefs(record) {
 function memoryForModel(record, unavailable) {
   const { id, kind, source, created_at: time, payload: p } = record;
   let payload = p;
-  if (kind === 'answer') payload = { question: p.question || null, question_source: 'user', reply: p.summary || '', reply_source: source, evidence: frameRefs(record) };
+  if (kind === 'answer') payload = { question: p.question || null, question_source: 'user', reply: p.summary || '', reply_source: source, observed_at: p.reaction_observed_at || null, evidence: frameRefs(record) };
   if (kind === 'experience') payload = { title: p.title, hypothesis: p.hypothesis, action: p.action, check: p.check, conditions: p.conditions, status: p.status, outcome: p.outcome, result: p.result, result_source: p.result_source || null, note: p.note, needs_review: !!p.needs_review, history: p.history, before_evidence: p.before_evidence, after_evidence: p.after_evidence, evidence: frameRefs(record) };
   return { id, kind, source, time, payload, unavailable_evidence: frameRefs(record).filter(unavailable) };
 }

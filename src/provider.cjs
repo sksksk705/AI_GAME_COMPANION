@@ -4,11 +4,12 @@ const { systemPrompt } = require('./prompts.cjs');
 
 const answerSchema = {
   type: 'object', additionalProperties: false,
-  required: ['summary', 'should_speak', 'event_type', 'event_key', 'focus_busy', 'goal_related', 'facts', 'hypotheses', 'missing_information', 'suggestions', 'memory_proposals', 'annotations', 'next_action', 'learning_proposals'],
+  required: ['summary', 'should_speak', 'event_type', 'event_key', 'focus_busy', 'goal_related', 'facts', 'hypotheses', 'missing_information', 'suggestions', 'memory_proposals', 'annotations', 'next_action', 'learning_proposals', 'observed_change'],
   properties: {
     should_speak: { type: 'boolean' }, focus_busy: { type: 'boolean' }, goal_related: { type: 'boolean' }, event_key: { type: 'string' },
     event_type: { type: 'string', enum: ['quiet', 'reaction', 'help', 'follow_up'] },
     summary: { type: 'string', description: '기본 120자 안팎의 두 문장 대사. 여러 단계 설명은 suggestions로 옮긴다.' }, next_action: { type: 'string', description: '지금 바로 할 행동 하나. 여러 단계나 추가 정보 목록을 요구하지 않는다. 잡담이면 빈 문자열.' },
+    observed_change: { type: ['object', 'null'], additionalProperties: false, required: ['kind', 'before_evidence_id', 'after_evidence_id', 'before', 'after'], properties: { kind: { type: 'string', enum: ['progress', 'setback', 'discovery', 'change'] }, before_evidence_id: { type: 'string' }, after_evidence_id: { type: 'string' }, before: { type: 'string', description: '이전 이미지에서 직접 읽은 게임 상태' }, after: { type: 'string', description: '이후 이미지에서 직접 읽은 달라진 게임 상태. 원인·감정·의도 추정 제외' } } },
     ...Object.fromEntries(['hypotheses', 'missing_information', 'suggestions', 'memory_proposals'].map(key => [key, { type: 'array', items: { type: 'string' } }])),
     facts: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'evidence_id'], properties: { text: { type: 'string' }, evidence_id: { type: 'string' } } } },
     annotations: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['evidence_id', 'x', 'y', 'width', 'height', 'label'], properties: { evidence_id: { type: 'string' }, label: { type: 'string' }, ...Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, { type: 'number' }])) } } },
@@ -22,7 +23,7 @@ async function models(signal) {
   return (data.data || []).filter(m => m.architecture?.input_modalities?.includes('image') && m.supported_parameters?.includes('structured_outputs')).map(m => ({ id: m.id, name: m.name, pricing: m.pricing }));
 }
 async function analyze({ key, model, world, question, evidence, memories, profile = { name: '동료', style: 'calm', tone: 'casual', preferences: '' }, mode = 'quiet', automatic = false, recent = [], signal, fetchImpl = fetch }) {
-  const metadata = evidence.map(f => ({ id: f.id, source: f.source, observed_at: f.payload.capturedAt || null, saved_at: f.created_at, video_time: f.payload.videoTime, width: f.payload.width, height: f.payload.height }));
+  const metadata = evidence.map((f, i) => ({ id: f.id, source: f.source, observed_at: f.payload.capturedAt || null, saved_at: f.created_at, video_time: f.payload.videoTime, width: f.payload.width, height: f.payload.height, comparison_role: automatic && mode === 'together' ? (i === 0 ? 'before' : 'after') : null }));
   const guide = world.state.scenario === 'anno-hops' ? { scope: '기본 게임의 일반 안내 · 버전과 실제 설정은 미확인', current_step: { number: (world.state.step || 0) + 1, ...ROUTE_STEPS[world.state.step || 0] }, steps: ROUTE_STEPS } : null;
   const response = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST', redirect: 'error', signal, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
