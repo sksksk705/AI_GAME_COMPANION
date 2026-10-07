@@ -123,6 +123,7 @@ async function check() {
     await assert.rejects(analyze({ ...parameters, fetchImpl: async () => { retries++; throw new DOMException('aborted', 'AbortError'); } }));
     assert.equal(retries, 1);
     await assert.rejects(analyze({ ...parameters, fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: 'not JSON' } }] })) }));
+    await require('./learning.cjs')();
     console.log('PASS: natural dialogue context, generic games, companion preferences, silence/freshness/focus/cooldown/deduplication, fleet boundaries, plan lifecycle, memory isolation/correction, SQLite restart, quota, provider validation/cancellation.');
     console.log('Provider responses above are fixtures; no paid API or actual game capture was tested.');
   } finally {

@@ -63,7 +63,8 @@ function validateAnswer(answer, evidence) {
   if (typeof answer.should_speak !== 'boolean' || !['quiet', 'reaction', 'help', 'follow_up'].includes(answer.event_type) || typeof answer.focus_busy !== 'boolean' || typeof answer.goal_related !== 'boolean') throw new Error('동료의 반응 판단 형식이 올바르지 않아요.');
   const summary = text(answer.summary), eventKey = text(answer.event_key, 150);
   if (answer.should_speak && !summary) throw new Error('동료의 답변이 비어 있어요.');
-  return { summary, should_speak: answer.should_speak, event_type: answer.event_type, event_key: eventKey, focus_busy: answer.focus_busy, goal_related: answer.goal_related, facts, hypotheses: strings('hypotheses'), missing_information: strings('missing_information'), suggestions: strings('suggestions'), memory_proposals: strings('memory_proposals'), next_action: text(answer.next_action, 1000), annotations };
+  const learning_proposals = require('./learning.cjs').validateProposals(answer.learning_proposals, evidence);
+  return { summary, should_speak: answer.should_speak, event_type: answer.event_type, event_key: eventKey, focus_busy: answer.focus_busy, goal_related: answer.goal_related, facts, hypotheses: strings('hypotheses'), missing_information: strings('missing_information'), suggestions: strings('suggestions'), memory_proposals: strings('memory_proposals'), next_action: text(answer.next_action, 1000), annotations, learning_proposals };
 }
 function gameLabel(game) { return game === 'anno1800' ? 'Anno 1800' : game === 'factorio' ? 'Factorio' : game; }
 function companionProfile(input) {

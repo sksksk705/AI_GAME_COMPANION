@@ -3,6 +3,7 @@ let state, view = 'play', selectedWindow, pinnedFrame, marksVisible = true, time
 let editingRecord;
 let pinnedAnswer, focusedEvidenceId, correctionFrame, correctionLabel;
 let messageSignature = '', activePing = 0;
+let editingExperience = null, experienceMode = 'new';
 const video = $('#game-video');
 const canvas = document.createElement('canvas');
 const context = canvas.getContext('2d', { alpha: false });
@@ -27,6 +28,9 @@ function render(next) {
   const previousAnswer = state?.records.find(r=>r.kind==='answer' && !r.payload.automatic)?.id;
   state = next;
   const w = world();
+  if (pinnedFrame) pinnedFrame = state.records.find(r => r.id === pinnedFrame.id && r.payload.available) || null;
+  if (pinnedAnswer) pinnedAnswer = state.records.find(r => r.id === pinnedAnswer.id) || null;
+  if (previousWorld !== state.activeWorld) { editingExperience = null; $('#experience-dialog').close(); }
   if (previousWorld !== state.activeWorld) { pinnedFrame = null; pinnedAnswer = null; focusedEvidenceId = null; correctionFrame = null; $('#question-reference').hidden = true; $('#evidence-dialog').close(); $('#evidence-crop-view').replaceChildren(); $('#evidence-original').removeAttribute('src'); selectedWindow = null; messageSignature = ''; $('#source-kind').value = 'window'; $('#question').value = ''; $('#case-tools').open = false; $('#fleet-form').reset(); $('#fleet-result').replaceChildren(); $('#memory-search').value = ''; }
   document.body.classList.toggle('compact', state.compact);
   document.body.classList.toggle('overlay-input', state.compact && state.overlay.interactive);
@@ -57,7 +61,7 @@ function render(next) {
   $('#recap-note').textContent = note?.payload.text || '나눈 이야기와 직접 남긴 기억을 이 플레이에서 이어가요.';
   $('#plan-badge').textContent = w.state.status === 'proposed' ? '제안 · 미적용' : state.planStates[w.state.status];
   $('.supply-card .subtle-badge').textContent = ['applied', 'resolved'].includes(w.state.status) ? '개념도 · 제안 구성' : '개념도 · 미적용';
-  renderGuide(); renderPlan(); renderMessages(); renderSettings();
+  renderGuide(); renderPlan(); renderMessages(); renderExperiences(); renderSettings();
   if (state.compact && !state.overlay.interactive) $('#messages').scrollTop = 0;
   for (const [key, value] of Object.entries(w.state.inputs)) { const field = $(`[name="${key}"]`); if (field && document.activeElement !== field) field.value = value; }
   const observing = state.observation.observing;
@@ -192,7 +196,7 @@ function evidenceVisual(frame, mark, answer) {
 }
 function renderMessages() {
   const answers = state.records.filter(r => r.kind === 'answer' && (!r.payload.automatic || r.payload.delivered === true)).slice(0, 20).reverse();
-  const signature = state.activeWorld + answers.map(r => r.id).join();
+  const signature = JSON.stringify([state.activeWorld, answers.map(r => [r.id, r.payload]), state.records.filter(r => r.kind === 'frame').map(r => [r.id, r.payload.available, r.payload.expired]), state.records.filter(r => r.kind === 'experience').map(r => [r.id, r.payload.revision])]);
   if (signature === messageSignature) return;
   messageSignature = signature;
   const wasNearBottom = $('#messages').scrollHeight - $('#messages').scrollTop - $('#messages').clientHeight < 100;
@@ -219,7 +223,7 @@ function renderMessages() {
         const item = node('li', '', fact.text + ' ');
         const frame = state.records.find(r => r.id === fact.evidence_id && r.kind === 'frame');
         if (frame?.payload.available) { const button = node('button', 'evidence-link', '근거 화면 ↗'); button.onclick = () => openEvidence(frame, null, record); item.append(button); }
-        else item.append(node('span', 'muted', '(원본 근거가 없어요)'));
+        else item.append(node('span', 'muted', frame?.payload.expired ? '(원본 이미지 보관 기간이 지났어요)' : '(원본 근거가 없어요)'));
         list.append(item);
       }); detail.append(list);
     }
@@ -231,6 +235,14 @@ function renderMessages() {
     if (record.source === 'guide') detail.append(node('p', 'help-text', '일반 가이드는 저장소 사례와 개발사 설명을, 기본 단축키와 진입 아이콘은 Anno 커뮤니티 위키를 참고해요. 키 변경·버전·모드와 실제 항로 설정은 추가 확인이 필요해요.'));
     if (detail.childElementCount > 1) bubble.append(detail);
     if (answer.automatic) { const dismiss = node('button', 'text-button', '이 반응은 그만'); dismiss.onclick = safe(async () => render(await call('chat:dismiss', record.id))); bubble.append(dismiss); }
+    if (answer.experience_ids?.length) {
+      const learning = node('div', 'answer-learning');
+      for (const id of answer.experience_ids) {
+        const experience = state.records.find(r => r.id === id && r.kind === 'experience');
+        if (experience) learning.append(experienceCard(experience));
+      }
+      if (learning.childElementCount) bubble.append(learning);
+    }
     return answer.automatic ? [bubble] : [user, bubble];
   });
   $('#messages').replaceChildren(...fragments);
@@ -252,6 +264,62 @@ function renderSettings(force = false) {
   }
   $('#api-key').placeholder = state.settings.hasKey ? '연결된 키는 표시하지 않아요. 변경하려면 새 키를 입력하세요.' : 'sk-or-…';
 }
+function openExperience(record = null, mode = 'new') {
+  editingExperience = record; experienceMode = mode;
+  const form = $('#experience-form'); form.reset();
+  for (const key of ['title', 'hypothesis', 'action', 'check', 'conditions', 'result']) form.elements[key].value = record?.payload[key] || '';
+  form.elements.outcome.replaceChildren(...Object.entries(state.outcomes).map(([value, label]) => { const option = node('option', '', label); option.value = value; return option; }));
+  form.elements.outcome.value = record?.payload.outcome || 'inconclusive';
+  $('#experience-dialog-title').textContent = mode === 'result' ? '적용 뒤에 어떻게 달라졌어?' : record ? '경험 내용 바로잡기' : '같이 해볼 작은 시도';
+  $('#experience-details').hidden = mode === 'result';
+  const resultVisible = mode === 'result' || record?.payload.status === 'completed';
+  $('#experience-result-fields').hidden = !resultVisible;
+  form.elements.result.required = resultVisible; form.elements.result.disabled = !resultVisible;
+  form.elements.outcome.disabled = !resultVisible;
+  $('#experience-dialog').showModal();
+}
+function experienceCard(record) {
+  const p = record.payload, card = node('article', 'experience-card'); card.dataset.experience = record.id;
+  card.append(node('span', 'experience-status', state.experienceStates[p.status]), node('h4', '', p.title), node('p', '', `시도 · ${p.action}`), node('p', 'help-text', `확인 · ${p.check}`));
+  if (p.hypothesis) card.append(node('p', 'help-text', `가설 · ${p.hypothesis}`));
+  if (p.conditions) card.append(node('p', 'help-text', `조건 · ${p.conditions}`));
+  if (p.result) card.append(node('p', '', `${state.outcomes[p.outcome]} · 사용자 보고: ${p.result}`));
+  if (p.needs_review) card.append(node('p', 'help-text', '근거 만료·내용 변경으로 다시 확인할 경험이에요.'));
+  const pictures = node('div', 'experience-evidence');
+  for (const [key, label] of [['before_evidence', '시도 전 근거'], ['after_evidence', '결과 기록 때의 화면']]) for (const id of p[key] || []) {
+    const frame = state.records.find(r => r.id === id && r.kind === 'frame');
+    if (frame?.payload.available) { const link = node('button', 'text-button', `${label} ↗`); link.onclick = () => openEvidence(frame); pictures.append(link); }
+    else if (frame) pictures.append(node('span', 'help-text', `${label} · 원본 없음${frame.payload.expired ? ' (보관 만료)' : ''}`));
+    else {
+      const link = node('button', 'text-button', `${label} 보기 ↗`);
+      link.onclick = safe(async () => {
+        const frame = await call('record:get', id);
+        if (frame.world_id !== state.activeWorld) return;
+        if (!frame.payload.available) { toast(frame.payload.expired ? '원본 이미지 보관 기간이 지났어요.' : '원본 이미지를 찾을 수 없어요.'); return; }
+        openEvidence(frame);
+      });
+      pictures.append(link);
+    }
+  }
+  if (pictures.childElementCount) card.append(pictures);
+  const actions = node('div', 'experience-actions');
+  const titles = { accepted: '해보기', applied: '적용했어', completed: '결과 남기기', deferred: '나중에', rejected: '이번엔 안 할래' };
+  for (const status of state.experienceTransitions[p.status] || []) {
+    const button = node('button', 'secondary small', titles[status]);
+    button.onclick = status === 'completed' ? () => openExperience(record, 'result') : safe(async () => render(await call('experience:update', { id: record.id, expected_revision: p.revision, status })));
+    actions.append(button);
+  }
+  const edit = node('button', 'text-button', '내용 수정'); edit.onclick = () => openExperience(record, 'edit'); actions.append(edit); card.append(actions);
+  return card;
+}
+function renderExperiences() {
+  const records = state.records.filter(r => r.kind === 'experience');
+  const active = records.filter(r => ['proposed', 'accepted', 'applied'].includes(r.payload.status));
+  const recent = records.filter(r => r.payload.status === 'completed').slice(0, 2);
+  $('#experience-list').replaceChildren(...[...active.slice(0, 4), ...recent].map(experienceCard));
+  if (!active.length && !recent.length) $('#experience-list').append(node('p', 'help-text', '함께 고른 작은 시도와 결과를 여기에서 이어가요.'));
+  $('#experience-count').textContent = active.length ? `진행 중 ${active.length}개 · 전체는 월드 기억에서` : '제안 수락 · 적용 · 결과를 따로 기억해요';
+}
 function renderMemory(records = state.records) {
   const visible = records.filter(r => r.kind !== 'usage');
   $('#record-list').replaceChildren(...visible.map(record => {
@@ -265,11 +333,13 @@ function renderMemory(records = state.records) {
       controls.append(edit, document.createTextNode(' · '));
     }
     controls.append(remove); meta.append(node('span', '', `${labels[record.source] || record.source} · ${time(record.created_at)}`), controls); card.append(meta);
+    if (record.kind === 'experience') { card.append(experienceCard(record)); return card; }
     card.append(node('p', '', record.payload.text || record.payload.summary || record.payload.question || (record.kind === 'answer' ? '새로 말할 일이 없어 조용히 지켜봤어요.' : { frame: '기록한 화면', goal: '목표를 비웠어요.', plan: '계획 기록' }[record.kind] || '플레이 기록')));
     if (record.kind === 'frame' && record.payload.available) {
       const image = node('img'); image.src = record.payload.url; image.alt = `${labels[record.source]} 근거 화면`; image.loading = 'lazy'; card.append(image);
       const show = node('button', 'text-button', '원본 확대해서 보기 ↗'); show.onclick = () => { setView('play'); openEvidence(record); }; card.append(show);
     }
+    if (record.kind === 'frame' && record.payload.expired) card.append(node('p', 'help-text', '원본 이미지 보관 기간이 지났어요. 연결된 대화와 경험은 유지해요.'));
     if (record.kind === 'answer' && record.source === 'model') card.append(node('p', 'help-text', record.payload.automatic ? '자동 분석 후보예요. 사용자 확인 없이 확정 기억이나 해결 상태로 바꾸지 않아요.' : 'AI 해석은 검토할 수 있는 답변으로 저장돼요.'));
     return card;
   }));
@@ -299,7 +369,7 @@ async function captureFrame(force = false) {
     state.observation.lastFrame = result.capturedAt;
     $('#last-observation').textContent = `마지막 캡처 ${time(result.capturedAt)}`;
     $('#frame-time').textContent = $('#source-kind').value === 'video' ? `영상 ${videoTime(video.currentTime)} · 현재 상태 아님` : time(result.capturedAt);
-    if (result.record) { state.records.unshift(result.record); state.records = state.records.slice(0, 100); if (view === 'memory') renderMemory(); if (force) toast('이 월드의 근거 화면으로 기록했어요.'); }
+    if (result.record) { state.records = [result.record, ...state.records.filter(r => r.id !== result.record.id)]; if (view === 'memory') renderMemory(); if (force) toast('이 월드의 근거 화면으로 기록했어요.'); }
   } finally { captureBusy = false; }
 }
 async function startCapture() {
@@ -403,6 +473,22 @@ $('#cancel-analysis').onclick = safe(() => call('chat:cancel'));
 $('#note-form').onsubmit = safe(async event => { event.preventDefault(); render(await call('record:add', $('#new-note').value)); $('#new-note').value = ''; });
 $('#close-record-dialog').onclick = () => $('#record-dialog').close();
 $('#record-form').onsubmit = safe(async event => { event.preventDefault(); render(await call('record:edit', { id: editingRecord, text: $('#edit-note').value })); $('#record-dialog').close(); toast('기억을 수정했어요. 이전 내용을 쓴 답변도 함께 정리했어요.'); });
+$('#new-experience').onclick = () => openExperience();
+$('#close-experience-dialog').onclick = () => $('#experience-dialog').close();
+$('#experience-form').onsubmit = safe(async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const content = Object.fromEntries(['title', 'hypothesis', 'action', 'check', 'conditions'].map(k => [k, form.elements[k].value]));
+  let next;
+  if (!editingExperience) next = await call('experience:create', { ...content, evidence_ids: pinnedFrame?.payload.available ? [pinnedFrame.id] : [] });
+  else {
+    const changes = { id: editingExperience.id, expected_revision: editingExperience.payload.revision, ...(experienceMode === 'result' ? { status: 'completed' } : content) };
+    if (experienceMode === 'result' || editingExperience.payload.status === 'completed') { changes.result = form.elements.result.value; changes.outcome = form.elements.outcome.value; }
+    next = await call('experience:update', changes);
+  }
+  $('#experience-dialog').close(); editingExperience = null; render(next);
+  toast('이 플레이의 경험으로 남겼어요. 다음 대화에서 조건을 확인하며 참고해요.');
+});
 let searchTimer, searchRevision = 0;
 $('#memory-search').oninput = () => { clearTimeout(searchTimer); const revision = ++searchRevision; searchTimer = setTimeout(safe(async () => { const query = $('#memory-search').value.trim(), id = state.activeWorld; const results = query ? await call('record:search', query) : state.records; if (revision === searchRevision && id === state.activeWorld) renderMemory(results); }), 200); };
 $('#export-world').onclick = safe(async () => { if (await call('world:export')) toast('키를 제외한 월드 기록과 근거 이미지를 내보냈어요.'); });

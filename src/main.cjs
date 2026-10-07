@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const { openStore } = require('./store.cjs');
 const { ROUTE_STEPS, PLAN_STATES, TRANSITIONS, text, calculateFleet, frameDifference, localAnswer, companionProfile, conversation, proactiveDecision } = require('./core.cjs');
 const provider = require('./provider.cjs');
+const { EXPERIENCE_STATES, EXPERIENCE_TRANSITIONS, OUTCOMES } = require('./learning.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'companion', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 const smoke = process.argv.includes('--smoke');
@@ -50,15 +51,15 @@ function publicRecord(row) {
   const record = { ...row, payload: { ...row.payload } };
   if (row.kind === 'frame') {
     const file = path.join(directory, 'evidence', path.basename(row.payload.filename));
-    record.payload.available = fs.existsSync(file);
+    record.payload.available = !row.payload.expired && fs.existsSync(file);
     record.payload.url = record.payload.available ? `companion://app/evidence/${row.world_id}/${row.id}` : null;
     delete record.payload.filename;
   }
   return record;
 }
 function snapshot() {
-  const records = [...new Map([...store.records(activeWorld), ...store.context(activeWorld)].map(r => [r.id, r])).values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
-  return { worlds: store.worlds(), activeWorld, records: records.map(publicRecord), compact, overlay: { interactive: overlayInteractive, shortcuts }, steps: ROUTE_STEPS, planStates: PLAN_STATES, transitions: TRANSITIONS,
+  const records = store.snapshotRecords(activeWorld);
+  return { worlds: store.worlds(), activeWorld, records: records.map(publicRecord), compact, overlay: { interactive: overlayInteractive, shortcuts }, steps: ROUTE_STEPS, planStates: PLAN_STATES, transitions: TRANSITIONS, experienceStates: EXPERIENCE_STATES, experienceTransitions: EXPERIENCE_TRANSITIONS, outcomes: OUTCOMES,
     settings: { ...settings, hasKey: fs.existsSync(path.join(directory, 'key.enc')), usedToday: usedToday(), usage: todayUsage(), secureStorage: safeStorage.isEncryptionAvailable() },
     reference: referenceVideo ? { name: path.basename(referenceVideo), url: `companion://app/media/reference.mp4?v=${referenceRevision}` } : null,
     observation: { observing, source: selectedSource?.name || null, sessionId: selectedSource?.sessionId || null, lastFrame: frames.at(-1)?.capturedAt || null, remoteBlocked } };
@@ -193,9 +194,7 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
   const world = store.world(activeWorld), contextEpoch = epoch;
   const latest = frames.at(-1);
   if (latest && Date.now() - Date.parse(latest.capturedAt) < 10000) saveFrame(latest);
-  const evidence = evidenceId ? [store.evidence(world.id, evidenceId)] : store.records(world.id, 500).filter(r => r.kind === 'frame' && !r.payload.expired).slice(0, 2).flatMap(r => { try { return [store.evidence(world.id, r.id)]; } catch { return []; } });
-  const recent = store.context(world.id);
-  const memories = [...new Map([...store.search(world.id, question.slice(0, 1000)).filter(r => ['goal', 'plan', 'note'].includes(r.kind)), ...recent.filter(r => ['goal', 'plan', 'note'].includes(r.kind)).slice(0, 8)].map(r => [r.id, r])).values()].slice(0, 12);
+  const { evidence, recent, memories } = store.analysisContext(world.id, question || world.goal, evidenceId);
   const controller = new AbortController();
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
@@ -212,7 +211,7 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
       remoteBlocked = false;
       const sampleStable = latest && frames.at(-1) && frameDifference(latest.signature, frames.at(-1).signature) <= 0.075;
       const suppressed = automatic ? (composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(result.answer.event_key) ? 'dismissed' : proactiveDecision(result.answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: store.context(world.id) })) : null;
-      const record = store.add(world.id, 'answer', 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...memories.map(r => r.id), ...conversation(recent).map(r => r.id)] });
+      const record = store.saveAnswer(world.id, 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...memories.map(r => r.id), ...conversation(recent).map(r => r.id)] });
       emit('data:changed', snapshot());
       if (!suppressed) emit('answer:ready', publicRecord(record));
       return publicRecord(record);
@@ -344,7 +343,25 @@ app.whenReady().then(async () => {
     if (!store.worlds().length) store.create('첫 플레이', '미지정', '');
     activeWorld = store.worlds()[0].id; saveSettings(); return snapshot();
   });
-  handle('record:add', value => { const note = text(value, 2000); if (!note) throw new Error('기억할 내용을 입력해주세요.'); store.add(activeWorld, 'note', 'user', { text: note }); return snapshot(); });
+  handle('record:add', value => { const note = text(value, 2000); if (!note) throw new Error('기억할 내용을 입력해주세요.'); epoch++; job?.controller.abort(); store.add(activeWorld, 'note', 'user', { text: note }); return snapshot(); });
+  handle('experience:create', input => {
+    store.createExperience(activeWorld, input);
+    epoch++; job?.controller.abort(); return snapshot();
+  });
+  handle('experience:update', input => {
+    const { id, ...changes } = input;
+    const previous = store.record(activeWorld, id);
+    if (previous.kind !== 'experience' || previous.payload.revision !== changes.expected_revision) throw new Error('경험이 바뀌었어요. 다시 열어서 수정해주세요.');
+    if (changes.status === 'completed' && previous.payload.status === 'applied') {
+      const latest = frames.at(-1);
+      if (observing && latest?.source === 'window' && latest.worldId === activeWorld && Date.now() - Date.parse(latest.capturedAt) < 10000) {
+        try { changes.after_evidence = [saveFrame(latest).id]; }
+        catch (error) { if (!error.message.includes('보관 한도')) throw error; }
+      }
+    }
+    store.updateExperience(activeWorld, id, changes);
+    epoch++; job?.controller.abort(); return snapshot();
+  });
   handle('record:edit', input => {
     const record = store.record(activeWorld, input.id), value = text(input.text, 2000);
     if (record.kind !== 'note' || record.source !== 'user' || !value) throw new Error('사용자가 추가한 기억만 수정할 수 있어요.');
@@ -352,6 +369,11 @@ app.whenReady().then(async () => {
   });
   handle('record:delete', id => { epoch++; job?.controller.abort(); store.remove(activeWorld, id); frames = []; return snapshot(); });
   handle('record:search', q => store.search(activeWorld, q).map(publicRecord));
+  handle('record:get', id => {
+    const record = store.record(activeWorld, text(id, 100));
+    if (record.kind !== 'frame') throw new Error('이미지 근거만 열 수 있어요.');
+    return publicRecord(record);
+  });
   handle('fleet:calculate', input => { if (store.world(activeWorld).state.scenario !== 'anno-hops') throw new Error('홉 운송 예제에서 사용하는 계산이에요.'); const result = calculateFleet(input); store.update(activeWorld, { inputs: input }); return { result, snapshot: snapshot() }; });
   handle('chat:local', intent => {
     if (store.world(activeWorld).state.scenario !== 'anno-hops') throw new Error('홉 운송 예제에서 사용하는 가이드예요.');
