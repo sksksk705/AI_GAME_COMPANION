@@ -8,6 +8,7 @@ const { openStore } = require('./store.cjs');
 const { ROUTE_STEPS, PLAN_STATES, TRANSITIONS, text, calculateFleet, frameDifference, localAnswer, companionProfile, conversation, proactiveDecision } = require('./core.cjs');
 const provider = require('./provider.cjs');
 const { EXPERIENCE_STATES, EXPERIENCE_TRANSITIONS, OUTCOMES } = require('./learning.cjs');
+const buddy = require('./buddy.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'companion', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 const smoke = process.argv.includes('--smoke');
@@ -17,12 +18,13 @@ if (!smoke && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', async (_event, args) => { if (win && !win.isDestroyed()) { if (args.includes('--overlay')) { if (!overlayInteractive) rememberForeground(); await setCompact(true); await setOverlayInput(false); } else if (compact) await setOverlayInput(true); else { win.restore(); win.show(); win.focus(); } } });
 let win, store, directory, activeWorld, referenceVideo, selectedSource, job, fullBounds, overlayBounds, fullMaximized;
 let overlayInteractive = false;
+let buddyRegions = [], buddyMouseActive = false, sessionStarted = 0, checkInIndex = 0, presenceSpeech = [];
 let nativeWindows, previousForeground = 0n, returningForeground = false, focusRevision = 0, overlayTransitions = 0;
 const shortcuts = { chat: null, visibility: null };
 let referenceRevision = randomUUID();
 let observing = false, compact = false, composerBusy = false, epoch = 0, lastSaved = 0, lastAnalysis = 0, lastInteraction = 0, lastSignature, frames = [], modelList = [], remoteBlocked = false;
 let dismissedEvents = new Set();
-let settings = { model: '', analysisConsent: false, autoAnalyze: false, maxRequests: 20, analysisInterval: 30, mode: 'quiet', profile: { name: '동료', style: 'calm', tone: 'casual', preferences: '' } };
+let settings = { model: '', analysisConsent: false, autoAnalyze: false, ambientChat: true, maxRequests: 20, analysisInterval: 30, mode: 'quiet', profile: { name: '동료', style: 'calm', tone: 'casual', preferences: '' } };
 const referenceName = 'Anno 1800 2026-10-06 22-25-26.mp4';
 const referenceMarks = [{ x: .357, y: .666, width: .07, height: .169, label: '① 선택한 교역소' }, { x: .699, y: .894, width: .123, height: .034, label: '② 홉 재고 · 영상 당시' }, { x: .086, y: .96, width: .035, height: .04, label: '③ 무역로 메뉴 · 기본 단축키 T' }];
 
@@ -99,6 +101,27 @@ async function restoreForeground() {
   if (!nativeWindows?.valid(previousForeground) || (!requested && currentForeground() !== windowHandle() && currentForeground() !== 0n)) return true;
   return activateForeground(previousForeground);
 }
+function updateBuddyMouse() {
+  if (!win || win.isDestroyed() || !compact || overlayInteractive || !win.isVisible()) return;
+  const active = buddy.hitsBuddy(screen.getCursorScreenPoint(), win.getBounds(), buddyRegions);
+  if (active !== buddyMouseActive) {
+    buddyMouseActive = active;
+    // The avatar accepts mouse clicks without becoming focusable. Empty space still reaches the game.
+    win.setIgnoreMouseEvents(!active, { forward: true });
+  }
+}
+function maybeCheckIn() {
+  if (!win || win.isDestroyed() || !compact) return;
+  const now = Date.now();
+  presenceSpeech = presenceSpeech.filter(time => now - time < 600000);
+  const turns = store.context(activeWorld).filter(r => r.kind === 'answer' && (!r.payload.automatic || r.payload.delivered)).map(r => Date.parse(r.created_at));
+  const recentSpeech = [...presenceSpeech, ...turns];
+  if (!buddy.canCheckIn({ visible: win.isVisible(), interactive: overlayInteractive, mode: settings.mode, enabled: settings.ambientChat,
+    observing, source: selectedSource?.id === 'video' ? 'video' : 'window', blocked: remoteBlocked, busy: composerBusy || !!job,
+    capturedAt: frames.at(-1)?.capturedAt, sessionStarted, lastInteraction, lastSpeech: Math.max(sessionStarted, ...recentSpeech), recentSpeech, count: checkInIndex }, now)) return;
+  presenceSpeech.push(now);
+  emit('buddy:checkin', { worldId: activeWorld, sessionId: selectedSource.sessionId, text: buddy.checkInText(settings.profile, checkInIndex++) });
+}
 async function setOverlayInput(active, visible = true, returnToGame = true) {
   if (!compact) return;
   overlayTransitions++;
@@ -107,15 +130,15 @@ async function setOverlayInput(active, visible = true, returnToGame = true) {
     if (active) rememberForeground();
     if (!active) prepareForegroundReturn(returnToGame);
     if (revision !== focusRevision || !compact) return;
-    // Keep mouse access if every global shortcut is occupied; never strand a click-through window.
-    overlayInteractive = active || !shortcuts.chat;
-    win.setIgnoreMouseEvents(!overlayInteractive);
+    // The avatar provides mouse access even when every question shortcut is occupied.
+    overlayInteractive = active;
+    buddyRegions = []; buddyMouseActive = overlayInteractive;
+    win.setIgnoreMouseEvents(!overlayInteractive, { forward: true });
     win.setFocusable(overlayInteractive);
     win.setSkipTaskbar(true);
-    win.setOpacity(overlayInteractive ? 1 : .94);
+    win.setOpacity(1);
     const bounds = win.getBounds(), area = screen.getDisplayMatching(bounds).workArea;
-    const height = Math.min(overlayInteractive ? 560 : 340, area.height);
-    win.setBounds({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y, area.y + area.height - height)) });
+    win.setBounds(buddy.overlayBounds(bounds, area, overlayInteractive));
     composerBusy = overlayInteractive; lastInteraction = Date.now();
     emit('window:changed', snapshot());
     if (visible) { if (overlayInteractive) { win.show(); win.focus(); await activateForeground(windowHandle()); if (revision === focusRevision && compact && overlayInteractive) emit('chat:focus', null); } else win.showInactive(); }
@@ -130,16 +153,16 @@ async function setCompact(next) {
   if (next) {
     fullMaximized = win.isMaximized(); fullBounds = win.getNormalBounds();
     if (fullMaximized) win.unmaximize();
-    win.setMinimumSize(300, 220); win.setResizable(false); win.setMaximizable(false);
+    win.setMinimumSize(120, 120); win.setResizable(false); win.setMaximizable(false);
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-    const width = Math.min(410, area.width), height = Math.min(340, area.height);
+    const width = Math.min(410, area.width), height = Math.min(280, area.height);
     const saved = overlayBounds && screen.getAllDisplays().some(d => overlayBounds.x >= d.workArea.x && overlayBounds.y >= d.workArea.y && overlayBounds.x + width <= d.workArea.x + d.workArea.width && overlayBounds.y + height <= d.workArea.y + d.workArea.height);
-    win.setBounds(saved ? { ...overlayBounds, width, height } : { x: area.x + Math.max(0, area.width - width - 16), y: area.y + Math.min(24, Math.max(0, area.height - height)), width, height });
+    win.setBounds(saved ? buddy.overlayBounds(overlayBounds, screen.getDisplayMatching(overlayBounds).workArea, false) : { x: area.x + Math.max(0, area.width - width - 16), y: area.y + Math.max(0, area.height - height - 32), width, height });
     // ponytail: desktop composition supports windowed/borderless games; exclusive fullscreen needs a game-specific integration.
     win.setAlwaysOnTop(true, 'screen-saver');
     return setOverlayInput(false);
   } else {
-    focusRevision++; overlayBounds = win.getBounds(); overlayInteractive = false;
+    focusRevision++; overlayBounds = win.getBounds(); overlayInteractive = false; buddyRegions = []; buddyMouseActive = false;
     win.setIgnoreMouseEvents(false); win.setFocusable(true); win.setSkipTaskbar(false); win.setOpacity(1);
     win.setAlwaysOnTop(false); win.setResizable(true); win.setMaximizable(true); win.setMinimumSize(1080, 720);
     if (fullBounds) win.setBounds(fullBounds);
@@ -161,7 +184,7 @@ function registerShortcut(candidates, callback) {
 }
 function stopObservation(reason = '사용자가 관찰을 중지했어요.') {
   if (observing) store.add(activeWorld, 'session', 'app', { text: reason, status: 'stopped' });
-  observing = false; selectedSource = null; frames = []; lastSignature = null; dismissedEvents.clear(); composerBusy = false; epoch++;
+  observing = false; selectedSource = null; frames = []; lastSignature = null; dismissedEvents.clear(); presenceSpeech = []; sessionStarted = 0; composerBusy = false; epoch++;
   job?.controller.abort();
   emit('capture:stop', reason);
 }
@@ -210,7 +233,7 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
       if (!stillValid) throw new Error('월드나 계획이 바뀌어 이전 답변을 폐기했어요.');
       remoteBlocked = false;
       const sampleStable = latest && frames.at(-1) && frameDifference(latest.signature, frames.at(-1).signature) <= 0.075;
-      const suppressed = automatic ? (composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(result.answer.event_key) ? 'dismissed' : proactiveDecision(result.answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: store.context(world.id) })) : null;
+      const suppressed = automatic ? (composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(result.answer.event_key) ? 'dismissed' : proactiveDecision(result.answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: [...store.context(world.id), ...presenceSpeech.map(time => ({ kind: 'answer', created_at: new Date(time).toISOString(), payload: { automatic: true, delivered: true } }))] })) : null;
       const record = store.saveAnswer(world.id, 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...memories.map(r => r.id), ...conversation(recent).map(r => r.id)] });
       emit('data:changed', snapshot());
       if (!suppressed) emit('answer:ready', publicRecord(record));
@@ -241,6 +264,7 @@ app.whenReady().then(async () => {
   if (fs.existsSync(settingsFile)) {
     try { const saved = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); settings.model = text(saved.model || '', 150); settings.analysisConsent = saved.analysisConsent === true; settings.autoAnalyze = saved.autoAnalyze === true; settings.maxRequests = Number.isInteger(saved.maxRequests) && saved.maxRequests >= 1 && saved.maxRequests <= 200 ? saved.maxRequests : 20;
       if ([15, 30, 60, 120].includes(saved.analysisInterval)) settings.analysisInterval = saved.analysisInterval;
+      settings.ambientChat = saved.ambientChat !== false;
       if (['quiet', 'watch', 'together'].includes(saved.mode)) settings.mode = saved.mode;
       if (saved.profile) settings.profile = companionProfile(saved.profile);
       if (store.worlds().some(w => w.id === saved.activeWorld)) activeWorld = saved.activeWorld;
@@ -268,13 +292,13 @@ app.whenReady().then(async () => {
     }
     return new Response('Not found', { status: 404 });
   });
-  win = new BrowserWindow({ width: 1540, height: 1020, minWidth: 1080, minHeight: 720, frame: false, show: !smoke && !process.argv.includes('--overlay'), backgroundColor: '#f5f6f1', title: '동료 · AI Game Companion', autoHideMenuBar: true,
+  win = new BrowserWindow({ width: 1540, height: 1020, minWidth: 1080, minHeight: 720, frame: false, transparent: true, hasShadow: false, show: !smoke && !process.argv.includes('--overlay'), backgroundColor: '#00000000', title: '동료 · AI Game Companion', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   initializeWindowsFocus();
   win.webContents.on('will-navigate', e => e.preventDefault());
   win.on('close', () => stopObservation('동료 창이 닫혀 관찰을 중지했어요.'));
-  win.on('blur', () => setImmediate(() => { if (!win.isDestroyed() && !overlayTransitions && compact && overlayInteractive && shortcuts.chat && currentForeground() !== windowHandle()) setOverlayInput(false, win.isVisible(), false); }));
+  win.on('blur', () => setImmediate(() => { if (!win.isDestroyed() && !overlayTransitions && compact && overlayInteractive && currentForeground() !== windowHandle()) setOverlayInput(false, win.isVisible(), false); }));
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => callback(contents === win.webContents && observing && !!selectedSource && ['media', 'display-capture'].includes(permission)));
   session.defaultSession.setPermissionCheckHandler((contents, permission) => contents === win.webContents && observing && !!selectedSource && ['media', 'display-capture'].includes(permission));
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
@@ -290,6 +314,9 @@ app.whenReady().then(async () => {
   globalShortcut.register('CommandOrControl+Shift+Space', () => { if (observing) emit('capture:now', null); });
   shortcuts.chat = registerShortcut(['CommandOrControl+Shift+G', 'CommandOrControl+Shift+F8'], toggleChat);
   shortcuts.visibility = registerShortcut(['CommandOrControl+Shift+H', 'CommandOrControl+Shift+F9'], toggleOverlayVisibility);
+  const buddyMouseTimer = setInterval(updateBuddyMouse, 80);
+  const checkInTimer = setInterval(maybeCheckIn, 30000);
+  win.on('closed', () => { clearInterval(buddyMouseTimer); clearInterval(checkInTimer); });
 
   handle('bootstrap', () => snapshot());
   handle('companion:save', input => {
@@ -297,6 +324,8 @@ app.whenReady().then(async () => {
     const mode = input.mode === undefined ? settings.mode : input.mode;
     if (!['quiet', 'watch', 'together'].includes(mode)) throw new Error('함께하는 방식을 확인해주세요.');
     if (mode === 'watch' && !store.world(activeWorld).goal) throw new Error('목표 감시를 켜기 전에 기억할 목표를 적어주세요.');
+    if (input.ambientChat !== undefined && typeof input.ambientChat !== 'boolean') throw new Error('짧은 인사 설정을 확인해주세요.');
+    if (input.ambientChat !== undefined) settings.ambientChat = input.ambientChat;
     settings.profile = profile; settings.mode = mode;
     epoch++; job?.controller.abort(); saveSettings(); return snapshot();
   });
@@ -309,10 +338,16 @@ app.whenReady().then(async () => {
   });
   handle('window:compact', async input => { await setCompact(input === true); return snapshot(); });
   handle('window:input', async input => { await setOverlayInput(input === true); return snapshot(); });
+  handle('window:regions', input => { buddyRegions = buddy.hitRegions(input); updateBuddyMouse(); return true; });
   handle('window:action', async action => {
     if (!['minimize', 'maximize', 'close'].includes(action)) throw new Error('창 동작을 확인해주세요.');
     if (action === 'close') win.close();
-    else if (action === 'minimize') { if (compact) await setOverlayInput(false, false); else win.minimize(); }
+    else if (action === 'minimize') {
+      // If neither shortcut is available, keep a taskbar entry from which the user can return.
+      if (compact && !shortcuts.chat && !shortcuts.visibility) { await setCompact(false); win.minimize(); }
+      else if (compact) await setOverlayInput(false, false);
+      else win.minimize();
+    }
     else if (!compact) { if (win.isMaximized()) win.unmaximize(); else win.maximize(); }
     return true;
   });
@@ -397,7 +432,7 @@ app.whenReady().then(async () => {
       if (!source) throw new Error('선택한 창을 찾을 수 없어요.');
       selectedSource = { id, name: source.name };
     }
-    selectedSource.sessionId = randomUUID(); observing = true; lastSaved = 0; lastAnalysis = Date.now(); remoteBlocked = false;
+    selectedSource.sessionId = randomUUID(); observing = true; sessionStarted = Date.now(); checkInIndex = 0; lastSaved = 0; lastAnalysis = Date.now(); remoteBlocked = false;
     store.add(activeWorld, 'session', 'app', { text: selectedSource.id === 'video' ? '첨부 영상 리플레이 시작 · 실시간 관찰 아님' : `창 관찰 시작: ${selectedSource.name}`, status: 'started' });
     return snapshot();
   });
@@ -660,9 +695,21 @@ app.whenReady().then(async () => {
         await waitWindow(()=>currentForeground() === previousForeground,'initial native game foreground');
         await setCompact(true);
         await waitWindow(async()=>currentForeground() === previousForeground && !win.isFocusable() && !overlayInteractive,'passive native game foreground');
-        if(!win.isAlwaysOnTop() || win.getOpacity()>=1 || win.isResizable() || (nativeWindows.style(windowHandle(), -20) & 0x20) === 0) throw Error('overlay native window flags missing');
-        await toggleChat();
-        await waitWindow(async()=>win.isFocused() && await win.webContents.executeJavaScript('document.activeElement===document.querySelector("#question")'),'shortcut composer focus');
+        const cursorBeforeBuddy = {}; cursor(cursorBeforeBuddy);
+        try {
+          const empty = screen.dipToScreenPoint({ x: win.getBounds().x + 8, y: win.getBounds().y + 8 });
+          moveCursor(empty.x, empty.y);
+          await waitWindow(() => (nativeWindows.style(windowHandle(), -20) & 0x20) !== 0, 'empty space passes clicks to the game');
+          if(!win.isAlwaysOnTop() || win.getOpacity()!==1 || win.isResizable() || win.isFocusable()) throw Error('companion native window flags missing');
+          const face = await win.webContents.executeJavaScript('JSON.stringify((()=>{const r=document.querySelector("#buddy-button").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})())');
+          const position = JSON.parse(face), target = screen.dipToScreenPoint({ x: Math.round(win.getBounds().x + position.x), y: Math.round(win.getBounds().y + position.y) });
+          moveCursor(target.x, target.y);
+          await waitWindow(() => (nativeWindows.style(windowHandle(), -20) & 0x20) === 0, 'avatar accepts mouse clicks');
+          if(win.isFocusable() || currentForeground()!==previousForeground) throw Error('hovering the companion stole game focus');
+          if(BigInt(ancestor(atPoint(target),2))!==windowHandle()) throw Error('companion is covered; no mouse input sent');
+          click(2,0,0,0,0); click(4,0,0,0,0);
+        } finally { moveCursor(cursorBeforeBuddy.x,cursorBeforeBuddy.y); }
+        await waitWindow(async()=>win.isFocused() && await win.webContents.executeJavaScript('document.activeElement===document.querySelector("#question")'),'avatar composer focus');
         if((nativeWindows.style(windowHandle(), -20) & 0x20) !== 0) throw Error('input mode still passed mouse clicks through');
         await win.webContents.executeJavaScript('document.querySelector("#question").value="아직 안 보낸 질문"');
         win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'}); win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
@@ -683,10 +730,9 @@ app.whenReady().then(async () => {
         const overlayAnswer=store.context(example.id).find(r=>r.kind==='answer' && r.payload.question==='UI 검증용 · 오버레이 질문');
         if(!overlayAnswer || !await win.webContents.executeJavaScript('document.querySelector("#messages").textContent.includes("지정 이미지 확인")')) throw Error('overlay answer not displayed');
         await win.webContents.executeJavaScript(`{
-          const displayed=[...document.querySelectorAll('.answer-bubble')].filter(b=>b.offsetHeight>0);
-          if(displayed.length!==1 || !displayed[0].textContent.includes('지정 이미지 확인') || document.querySelector('#chat-form').offsetHeight || displayed[0].querySelector('details')?.offsetHeight) throw Error('passive overlay did not show only the latest short answer');
-          const summary=displayed[0].querySelector('.answer-summary').getBoundingClientRect();
-          if(summary.top<document.querySelector('#messages').getBoundingClientRect().top || summary.bottom>innerHeight) throw Error('passive answer hidden outside viewport');
+          const bubble=document.querySelector('#buddy-bubble'), summary=document.querySelector('#buddy-speech-text').getBoundingClientRect();
+          if(bubble.hidden || !bubble.textContent.includes('지정 이미지 확인') || document.querySelector('#chat-form').offsetHeight || document.querySelector('#buddy-preview').hidden) throw Error('companion preview or evidence missing');
+          if(summary.top<0 || summary.bottom>innerHeight) throw Error('companion answer hidden outside viewport');
         }`);
         await win.webContents.executeJavaScript('document.querySelector("#toast").hidden=true');
         fs.writeFileSync(path.join(__dirname,'../.local/overlay-preview.png'),(await win.webContents.capturePage()).toPNG());
@@ -701,12 +747,19 @@ app.whenReady().then(async () => {
         await toggleOverlayVisibility(); if(win.isVisible() || currentForeground() !== previousForeground) throw Error('overlay hide failed');
         await toggleOverlayVisibility(); if(!win.isVisible() || overlayInteractive || currentForeground() !== previousForeground) throw Error('overlay show stole focus');
         const savedShortcut=shortcuts.chat; shortcuts.chat=null; await setOverlayInput(false);
-        if(!overlayInteractive || !win.isFocusable()) throw Error('shortcut failure stranded overlay');
-        shortcuts.chat=savedShortcut; setCompact(false);
+        if(overlayInteractive || win.isFocusable()) throw Error('shortcut failure forced input mode');
+        await win.webContents.executeJavaScript('document.querySelector("#buddy-button").click()',true);
+        await waitWindow(()=>overlayInteractive && win.isFocusable(),'avatar access without question shortcut');
+        await setOverlayInput(false);
+        const savedVisibility = shortcuts.visibility; shortcuts.visibility = null;
+        await win.webContents.executeJavaScript('call("window:action","minimize")',true);
+        await waitWindow(()=>!compact && win.isMinimized(),'taskbar recovery without registered shortcuts');
+        win.restore(); shortcuts.chat=savedShortcut; shortcuts.visibility=savedVisibility;
+        await waitWindow(()=>!win.isMinimized(),'restore taskbar fallback');
         if(JSON.stringify(win.getNormalBounds())!==JSON.stringify(normalBounds) || win.isAlwaysOnTop() || !win.isFocusable() || win.getOpacity()!==1) throw Error('normal window was not restored');
         store.remove(example.id,overlayAnswer.id);
         await win.webContents.executeJavaScript('document.querySelector("#question").value=""; document.querySelector("#toast").hidden=true;');
-        result.overlayFocus=true; result.overlaySendWhilePending=true; result.overlayCaptureContinuity=true; result.overlayShortcutFallback=true; result.overlayHide=true; result.overlayClickThrough=true;
+        result.overlayFocus=true; result.overlaySendWhilePending=true; result.overlayCaptureContinuity=true; result.overlayShortcutFallback=true; result.overlayHide=true; result.overlayClickThrough=true; result.overlayAvatarClick=true;
         foregroundCheck.kill();
       } finally { global.fetch=originalFetch; settings=oldSettings; activeWorld=genericId; store.remove(genericId,otherFrame.id); fs.rmSync(path.join(directory,'key.enc'),{force:true}); }
       for (const r of uiFixtures) if (store.db.prepare('SELECT id FROM records WHERE id=? AND deleted_at IS NULL').get(r.id)) store.remove(genericId, r.id);

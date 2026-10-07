@@ -8,3 +8,64 @@ body.compact{overflow:hidden}body.compact .sidebar,body.compact .topbar,body.com
 @media(max-width:1250px){body:not(.compact) .play-layout{grid-template-columns:minmax(310px,1fr) minmax(350px,1fr);gap:19px}.companion-bar #mode-description{display:none}.chat-intro h3{font-size:24px}.chat-panel{height:calc(100vh - 225px)}.messages{padding:18px 20px}.user-bubble{margin-left:25px}}
 body.compact:not(.overlay-input) #messages>.user-bubble,body.compact:not(.overlay-input) #messages>.answer-bubble:has(~.answer-bubble),body.compact:not(.overlay-input) .answer-visuals,body.compact:not(.overlay-input) .answer-bubble>details{display:none}body.compact:not(.overlay-input) .answer-bubble{margin-bottom:8px}
 .experience-panel{margin-bottom:20px}.experience-card{padding:14px;margin:12px 0;border:1px solid #dce5d4;border-radius:10px;background:#f5f8f0}.experience-card h4{margin:7px 0;font-size:14px}.experience-card p{margin:7px 0;white-space:pre-wrap;font-size:12px;line-height:1.7}.experience-status{font-size:11px;color:#64805a}.experience-actions,.experience-evidence{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.answer-learning{margin-top:12px}#experience-dialog{max-height:calc(100vh - 40px);overflow:auto}#experience-details,#experience-result-fields{display:grid;gap:12px}#experience-details[hidden],#experience-result-fields[hidden]{display:none}body.compact:not(.overlay-input) .answer-learning{display:none}
+/* The transparent desktop companion only catches clicks on its visible controls. */
+body.compact{background:transparent}
+body.compact:not(.overlay-input) .workspace,body.compact:not(.overlay-input) .window-chrome,body.compact:not(.overlay-input) #overlay-hint{display:none}
+body.compact.overlay-input .workspace{padding:56px 12px 112px}
+body.compact.overlay-input .chat-panel{height:calc(100vh - 168px);border-radius:18px;box-shadow:0 8px 25px #143b2526}
+body.compact.overlay-input .window-chrome{inset:8px 12px auto;height:32px;border:1px solid #dce5d4;border-radius:11px;background:#f3f7ef}
+body.compact.overlay-input .window-chrome #window-close{display:none}
+body.compact.overlay-input .window-chrome .text-button{font-size:10px}
+body.compact.overlay-input #overlay-hint{top:43px;height:13px;padding:0 16px;background:transparent;border:0;font-size:9px;color:#648264}
+body.compact.overlay-input .messages{flex:1;max-height:none;min-height:0}
+body.compact.overlay-input .chat-footer{line-height:1.5;margin:6px 12px 9px}
+.buddy-dock{position:fixed;inset:0;pointer-events:none;z-index:25;user-select:none}
+.buddy-dock button,.buddy-drag{pointer-events:auto;-webkit-app-region:no-drag}
+.buddy-button{position:absolute;right:20px;bottom:36px;width:80px;height:84px;border-radius:45%;padding:0;background:transparent;color:#294e3e}
+.buddy-button:hover:not(:disabled){filter:none}
+.buddy-button:hover .buddy-character{transform:translateY(-3px) rotate(-4deg)}
+.buddy-character{position:absolute;inset:10px 3px 3px;display:block;background:linear-gradient(140deg,#f0f5d9,#cce0bb);border:2px solid #a9c599;border-radius:44% 44% 42% 42%;box-shadow:0 5px 15px #102e2740,inset 0 -5px 0 #bcd3ab;animation:buddy-breathe 5s ease-in-out infinite}
+.buddy-face{position:absolute;inset:0}
+.buddy-leaf{position:absolute;width:21px;height:13px;background:#7aa16c;border:1px solid #678b5c;border-radius:80% 5% 80% 5%;left:36px;top:-10px;transform:rotate(-25deg)}
+.buddy-eye{position:absolute;top:23px;width:7px;height:10px;border-radius:50%;background:#345b45;animation:buddy-blink 7s infinite}
+.buddy-eye.left{left:20px}.buddy-eye.right{right:20px}
+.buddy-cheek{position:absolute;top:36px;width:11px;height:5px;background:#d6b99c;border-radius:50%;opacity:.65}
+.buddy-cheek.left{left:10px}.buddy-cheek.right{right:10px}
+.buddy-mouth{position:absolute;left:30px;top:36px;width:12px;height:7px;border:2px solid #5c8061;border-top:0;border-radius:0 0 10px 10px}
+.buddy-hand{position:absolute;top:41px;width:12px;height:19px;border-radius:50%;background:#cfe1bd;border:1px solid #a4c396}
+.buddy-hand.left{left:-8px;transform:rotate(20deg)}.buddy-hand.right{right:-8px;transform:rotate(-20deg)}
+.buddy-drag{position:absolute;right:2px;bottom:7px;width:130px;height:33px;padding:2px 6px;text-align:center;cursor:move;-webkit-app-region:drag;color:#3a6149;line-height:1.4;background:#f3f8ecef;border:1px solid #d3e0c8;border-radius:9px;box-shadow:0 2px 6px #16372618}
+#buddy-name{display:block;font-size:11px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#buddy-status{display:block;font-size:9px;color:#587758}
+.buddy-controls{position:absolute;right:29px;bottom:133px;display:flex;gap:4px;pointer-events:auto}
+.buddy-controls button{width:23px;height:23px;border:1px solid #d3dfca;background:#f6f9edf0;border-radius:50%;font-size:13px;color:#688265;line-height:1;padding:0;box-shadow:0 2px 5px #16372618}
+.buddy-thinking{position:absolute;top:-7px;left:19px;display:flex;gap:4px;padding:7px 9px;background:#f4f8ed;border:1px solid #ccdec0;border-radius:13px;box-shadow:0 3px 8px #183a251f}
+.buddy-thinking i{width:4px;height:4px;border-radius:50%;background:#779a65;animation:buddy-think 1.2s ease-in-out infinite}
+.buddy-thinking i:nth-child(2){animation-delay:.2s}.buddy-thinking i:nth-child(3){animation-delay:.4s}
+.buddy-unread{position:absolute;right:3px;top:9px;width:9px;height:9px;border-radius:50%;background:#d89659;border:2px solid #fff}
+.buddy-dock[data-mood="thinking"] .buddy-eye{height:4px;top:26px;animation:none;transform:rotate(-8deg)}
+.buddy-dock[data-mood="thinking"] .buddy-mouth{height:0;border-top:2px solid #5c8061;border-bottom:0;width:8px;left:32px;top:41px}
+.buddy-dock[data-mood="watching"] .buddy-character{border-color:#81a774}
+.buddy-dock[data-mood="speaking"] .buddy-hand.right{transform:translateY(-8px) rotate(-40deg)}
+.buddy-bubble{position:absolute;right:113px;bottom:42px;width:min(270px,calc(100vw - 135px));max-height:230px;display:flex;flex-direction:column;padding:11px 14px 9px;border:1px solid #d6e2cc;border-radius:17px 17px 4px 17px;background:#fcfdf8;box-shadow:0 6px 24px #183a2530;pointer-events:auto;animation:buddy-appear .2s ease-out}
+.buddy-bubble::after{content:'';position:absolute;right:-7px;bottom:17px;width:12px;height:12px;background:#fcfdf8;border-right:1px solid #d6e2cc;border-top:1px solid #d6e2cc;transform:rotate(45deg)}
+.buddy-bubble-heading{display:flex;justify-content:space-between;align-items:center;color:#85947d;font-size:9px;line-height:1.2;margin-bottom:6px}
+#buddy-dismiss{background:transparent;font-size:17px;color:#83917c;width:24px;height:22px;line-height:1;padding:0;margin:-4px -7px -3px 0}
+.buddy-speech{padding:0;background:transparent;text-align:left;font-size:12px;line-height:1.7;color:#355940;min-height:0;flex-shrink:1;overflow:hidden}
+#buddy-speech-text{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;white-space:pre-wrap;overflow:hidden}
+.buddy-read{background:transparent;text-align:left;padding:5px 0 0;color:#7a9670;font-size:9px;flex-shrink:0}
+.buddy-preview{margin-top:8px;flex-shrink:0}
+.buddy-evidence{display:flex;align-items:center;gap:8px;width:100%;padding:5px;border:1px solid #e1e9d9;border-radius:9px;background:#f0f5e9;text-align:left;color:#63815b;font-size:10px}
+.buddy-evidence .evidence-crop{width:73px!important;max-height:52px;border-radius:5px;flex-shrink:0;margin:0!important}
+.buddy-evidence .evidence-crop img{max-height:none}
+body.compact.overlay-input .buddy-bubble{display:none}
+body.compact #toast{bottom:125px;z-index:35}
+@keyframes buddy-breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
+@keyframes buddy-blink{0%,42%,45%,100%{transform:scaleY(1)}43%,44%{transform:scaleY(.1)}}
+@keyframes buddy-think{0%,70%,100%{opacity:.4;transform:translateY(0)}35%{opacity:1;transform:translateY(-2px)}}
+@keyframes buddy-appear{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.buddy-character,.buddy-eye,.buddy-thinking i,.buddy-bubble{animation:none}}
+@media(max-height:420px){body.compact.overlay-input .workspace{padding-bottom:80px}body.compact.overlay-input .chat-panel{height:calc(100vh - 136px)}body.compact.overlay-input .buddy-button{transform:scale(.65);transform-origin:bottom right;bottom:32px}body.compact.overlay-input .buddy-controls{right:119px;bottom:13px}body.compact.overlay-input .chat-heading{display:none}}
+
+#companion-dialog{max-height:calc(100vh - 32px);overflow:auto}
+.buddy-evidence>span{line-height:1.6}.buddy-evidence small{display:block;margin-top:3px;font-size:9px;color:#83957b}

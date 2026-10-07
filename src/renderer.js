@@ -4,6 +4,7 @@ let editingRecord;
 let pinnedAnswer, focusedEvidenceId, correctionFrame, correctionLabel;
 let messageSignature = '', activePing = 0;
 let editingExperience = null, experienceMode = 'new';
+let buddySpeech = null, buddySpeechTimer, buddyRegionFrame;
 const video = $('#game-video');
 const canvas = document.createElement('canvas');
 const context = canvas.getContext('2d', { alpha: false });
@@ -23,10 +24,84 @@ function setView(next) {
 }
 function gameLabel(game) { return game === 'anno1800' ? 'Anno 1800' : game === 'factorio' ? 'Factorio' : game; }
 const shortcutLabel = accelerator => accelerator?.replace('CommandOrControl', 'Ctrl').replaceAll('+', ' + ') || '단축키 사용 불가';
+function clearBuddySpeech() {
+  clearTimeout(buddySpeechTimer); buddySpeech = null;
+  $('#buddy-bubble').hidden = true; $('#buddy-unread').hidden = true; $('#buddy-preview').replaceChildren();
+  if (state) $('#buddy-dock').dataset.mood = asking ? 'thinking' : state.observation.observing ? 'watching' : 'idle';
+  queueBuddyRegions();
+}
+function showBuddySpeech(speech) {
+  if (!state || speech.worldId !== state.activeWorld || speech.id === buddySpeech?.id) return;
+  buddySpeech = speech; clearTimeout(buddySpeechTimer);
+  // A bubble is a transient preview. Its answer and images remain in the conversation.
+  buddySpeechTimer = setTimeout(clearBuddySpeech, 20000);
+  renderBuddy();
+}
+function announceAnswer(record) {
+  if (record.kind !== 'answer' || (record.payload.automatic && record.payload.delivered !== true)) return;
+  showBuddySpeech({ id: record.id, worldId: record.world_id, text: record.payload.summary, automatic: !!record.payload.automatic, record });
+}
+function queueBuddyRegions() {
+  cancelAnimationFrame(buddyRegionFrame);
+  buddyRegionFrame = requestAnimationFrame(() => {
+    if (!state?.compact) return;
+    const regions = state.overlay.interactive ? [] : ['#buddy-button', '#buddy-drag', '#buddy-controls', '#buddy-bubble'].flatMap(selector => {
+      const element = $(selector); if (element.hidden || !element.getClientRects().length) return [];
+      const rect = element.getBoundingClientRect();
+      const x = Math.max(0, rect.left - 3), y = Math.max(0, rect.top - 3);
+      return [{ x, y, width: Math.min(innerWidth, rect.right + 3) - x, height: Math.min(innerHeight, rect.bottom + 3) - y }];
+    }).filter(rect => rect.width > 0 && rect.height > 0);
+    call('window:regions', regions).catch(() => {});
+  });
+}
+function renderBuddy() {
+  $('#buddy-dock').hidden = !state.compact;
+  const profile = state.settings.profile, observing = state.observation.observing;
+  const replay = $('#source-kind').value === 'video';
+  const thinking = asking;
+  $('#buddy-name').textContent = profile.name;
+  $('#buddy-status').textContent = thinking ? '같이 생각하는 중' : observing ? (replay ? '지난 장면 보는 중' : '화면 함께 보는 중') : '부르면 대답할게';
+  $('#buddy-button').setAttribute('aria-label', state.overlay.interactive ? '대화를 접고 게임으로 돌아가기' : `${profile.name}와 대화하기`);
+  $('#buddy-button').setAttribute('aria-expanded', String(state.overlay.interactive));
+  $('#buddy-button').title = state.overlay.interactive ? '게임으로 돌아가기 · Esc' : `클릭해서 이야기하기 · ${shortcutLabel(state.overlay.shortcuts.chat)}`;
+    $('#buddy-thinking').hidden = !thinking;
+  if (buddySpeech?.record && !state.records.some(r => r.id === buddySpeech.id && (!r.payload.automatic || r.payload.delivered === true))) clearBuddySpeech();
+  if (buddySpeech?.automatic && (state.settings.mode === 'quiet' || (buddySpeech.ambient && (state.settings.ambientChat === false || !observing || replay)))) clearBuddySpeech();
+  $('#buddy-dock').dataset.mood = thinking ? 'thinking' : buddySpeech ? 'speaking' : observing ? 'watching' : 'idle';
+  $('#buddy-bubble').hidden = !buddySpeech || !state.compact || state.overlay.interactive;
+  $('#buddy-unread').hidden = !buddySpeech || state.overlay.interactive;
+  $('#buddy-preview').replaceChildren(); $('#buddy-preview').hidden = true;
+  if (buddySpeech) {
+    $('#buddy-speech-kind').textContent = buddySpeech.ambient ? '짧은 인사' : buddySpeech.automatic ? '먼저 건넨 말' : buddySpeech.record?.source === 'guide' ? '로컬 안내' : '대화';
+    const characters = Array.from(buddySpeech.text || '');
+    $('#buddy-speech-text').textContent = characters.slice(0, 220).join('') + (characters.length > 220 ? '…' : '');
+    const answer = buddySpeech.record;
+    if (answer) {
+      const marks = answer.payload.annotations || [], ids = [...marks.map(m => m.evidence_id), ...(answer.payload.facts || []).map(f => f.evidence_id)];
+      const frame = state.records.find(r => r.kind === 'frame' && r.payload.available && ids.includes(r.id));
+      if (frame) {
+        const mark = marks.find(m => m.evidence_id === frame.id), preview = node('button', 'buddy-evidence');
+        preview.setAttribute('aria-label', '이 말의 근거 화면 확대');
+        const caption = node('span', '', '이 기록 함께 보기 ↗');
+        caption.append(node('small', '', frame.source === 'video' ? `영상 ${videoTime(frame.payload.videoTime)} · 현재 아님` : `기록 ${time(frame.payload.capturedAt || frame.created_at)}`));
+        preview.append(evidenceCrop(frame, mark), caption);
+        preview.onclick = safe(async () => { render(await call('window:input', true)); openEvidence(frame, mark, answer); clearBuddySpeech(); });
+        $('#buddy-preview').append(preview); $('#buddy-preview').hidden = false;
+      }
+    }
+  }
+  queueBuddyRegions();
+}
+async function openBuddyChat() {
+  const next = await call('window:input', true); render(next); clearBuddySpeech();
+  $('#messages').scrollTop = $('#messages').scrollHeight;
+}
 function render(next) {
   const previousWorld = state?.activeWorld;
+  const previousAnswers = new Set(state?.records.filter(r => r.kind === 'answer').map(r => r.id));
   const previousAnswer = state?.records.find(r=>r.kind==='answer' && !r.payload.automatic)?.id;
   state = next;
+  if (previousWorld !== state.activeWorld) clearBuddySpeech();
   const w = world();
   if (pinnedFrame) pinnedFrame = state.records.find(r => r.id === pinnedFrame.id && r.payload.available) || null;
   if (pinnedAnswer) pinnedAnswer = state.records.find(r => r.id === pinnedAnswer.id) || null;
@@ -40,9 +115,9 @@ function render(next) {
   $('#window-title').textContent = state.compact ? `${state.settings.profile.name} · 게임 오버레이` : '동료 · AI Game Companion';
   $('#window-maximize').hidden = state.compact;
   $('#overlay-home').hidden = $('#overlay-return').hidden = $('#overlay-hint').hidden = !state.compact;
-  $('#overlay-return').disabled = !state.overlay.shortcuts.chat;
-  $('#overlay-hint').textContent = !state.overlay.shortcuts.chat ? '단축키 충돌 · 마우스로 입력할 수 있어요. 큰 창에서 다시 실행해주세요.' : state.overlay.interactive ? 'Enter 보내기 · Esc 게임 복귀 · 위쪽을 끌어 위치 이동' : `${shortcutLabel(state.overlay.shortcuts.chat)} 질문${state.overlay.shortcuts.visibility ? ` · ${shortcutLabel(state.overlay.shortcuts.visibility)} 숨기기` : ''} · 클릭은 게임으로`;
-  $('#overlay-settings-hint').textContent = `현재 질문 키: ${shortcutLabel(state.overlay.shortcuts.chat)} · 숨기기 키: ${shortcutLabel(state.overlay.shortcuts.visibility)}. 평소에는 클릭이 게임으로 통과해요. Esc로 질문을 보존하고 게임으로 돌아가요.`;
+  $('#overlay-return').disabled = false;
+  $('#overlay-hint').textContent = !state.overlay.shortcuts.chat ? '단축키 사용 불가 · 동료를 클릭해 대화 · Esc 게임 복귀' : 'Enter 보내기 · Esc 게임 복귀 · 이름을 끌어 위치 이동';
+  $('#overlay-settings-hint').textContent = `현재 질문 키: ${shortcutLabel(state.overlay.shortcuts.chat)} · 숨기기 키: ${shortcutLabel(state.overlay.shortcuts.visibility)}. 동료를 클릭해 대화하고 이름을 끌어 옮겨요. 빈 공간의 클릭은 게임으로 통과해요. Esc로 질문을 보존하고 게임으로 돌아가요.`;
   $('#compact-stop').hidden = !state.compact || !state.observation.observing;
   $('#companion-name').textContent = $('#chat-name').textContent = state.settings.profile.name;
   $('#companion-mode').value = state.settings.mode;
@@ -62,6 +137,11 @@ function render(next) {
   $('#plan-badge').textContent = w.state.status === 'proposed' ? '제안 · 미적용' : state.planStates[w.state.status];
   $('.supply-card .subtle-badge').textContent = ['applied', 'resolved'].includes(w.state.status) ? '개념도 · 제안 구성' : '개념도 · 미적용';
   renderGuide(); renderPlan(); renderMessages(); renderExperiences(); renderSettings();
+  if (previousWorld === state.activeWorld) {
+    const fresh = state.records.find(r => r.kind === 'answer' && !previousAnswers.has(r.id) && (!r.payload.automatic || r.payload.delivered === true) && Date.now() - Date.parse(r.created_at) < 30000);
+    if (fresh) announceAnswer(fresh);
+  }
+  renderBuddy();
   if (state.compact && !state.overlay.interactive) $('#messages').scrollTop = 0;
   for (const [key, value] of Object.entries(w.state.inputs)) { const field = $(`[name="${key}"]`); if (field && document.activeElement !== field) field.value = value; }
   const observing = state.observation.observing;
@@ -419,9 +499,19 @@ document.querySelectorAll('[data-intent]').forEach(button => { button.onclick = 
   if (button.dataset.intent === 'setup') $('#guide-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }); });
 $('#companion-mode').onchange = safe(async event => { const mode = event.target.value; try { render(await call('companion:save', { mode })); } catch (error) { event.target.value = state.settings.mode; throw error; } });
-$('#edit-companion').onclick = () => { const form = $('#companion-form'); for (const [key, value] of Object.entries(state.settings.profile)) form.elements[key].value = value; $('#companion-dialog').showModal(); };
+$('#edit-companion').onclick = () => { const form = $('#companion-form'); for (const [key, value] of Object.entries(state.settings.profile)) form.elements[key].value = value; form.elements.mode.value = state.settings.mode; form.elements.ambientChat.checked = state.settings.ambientChat !== false; $('#companion-dialog').showModal(); };
 $('#close-companion-dialog').onclick = () => $('#companion-dialog').close();
-$('#companion-form').onsubmit = safe(async event => { event.preventDefault(); const profile = Object.fromEntries(new FormData(event.target)); render(await call('companion:save', { profile })); $('#companion-dialog').close(); toast('우리 대화의 분위기를 저장했어요.'); });
+$('#companion-form').onsubmit = safe(async event => { event.preventDefault(); const profile = Object.fromEntries(new FormData(event.target)); const mode = profile.mode; delete profile.mode; delete profile.ambientChat; render(await call('companion:save', { profile, mode, ambientChat: event.target.elements.ambientChat.checked })); $('#companion-dialog').close(); toast('우리 대화의 분위기를 저장했어요.'); });
+$('#buddy-analysis-settings').onclick = () => { $('#companion-dialog').close(); setView('settings'); };
+$('#buddy-button').onclick = safe(async () => { if (state.overlay.interactive) render(await call('window:input', false)); else await openBuddyChat(); });
+$('#buddy-speech').onclick = $('#buddy-read').onclick = safe(openBuddyChat);
+$('#buddy-dismiss').onclick = clearBuddySpeech;
+$('#buddy-hide').onclick = safe(() => call('window:action', 'minimize'));
+$('#buddy-settings').onclick = safe(async () => { render(await call('window:compact', false)); setView('play'); $('#edit-companion').click(); });
+new ResizeObserver(queueBuddyRegions).observe($('#buddy-bubble'));
+window.addEventListener('resize', queueBuddyRegions);
+// Electron forwards movement through an ignored window; update targets promptly, with native polling as fallback.
+document.addEventListener('mousemove', () => { if (state?.compact && !state.overlay.interactive) queueBuddyRegions(); });
 $('#compact-toggle').onclick = safe(async () => { setView('play'); render(await call('window:compact', !state.compact)); });
 $('#overlay-home').onclick = safe(async () => render(await call('window:compact', false)));
 $('#overlay-return').onclick = safe(async () => render(await call('window:input', false)));
@@ -457,13 +547,13 @@ $('#chat-form').onsubmit = safe(async event => {
   if (!state.settings.hasKey || !state.settings.analysisConsent) { if (state.compact) render(await call('window:compact', false)); setView('settings'); toast('대화를 시작하려면 AI를 연결하고 전송을 허용해주세요.'); return; }
   if (asking) return;
   const question = $('#question').value.trim(); if (!question) return;
-  asking = true; $('#analysis-state').hidden = false; $('#send-question').disabled = true;
+  asking = true; renderBuddy(); $('#analysis-state').hidden = false; $('#send-question').disabled = true;
   const worldId = state.activeWorld, evidenceId = focusedEvidenceId || null;
   $('#question').value = ''; focusedEvidenceId = null; $('#question-reference').hidden = true;
   const pending = node('div', 'user-bubble pending', question); $('#messages').append(pending); $('#messages').scrollTop = $('#messages').scrollHeight;
   try { await Promise.all([call('chat:ask', {question,evidenceId}), state.compact ? call('window:input', false).then(render) : Promise.resolve()]); }
   catch (error) { if (state.activeWorld === worldId && !$('#question').value) { $('#question').value = question; focusedEvidenceId = evidenceId; $('#question-reference').hidden = !evidenceId; } throw error; }
-  finally { pending.remove(); asking = false; $('#analysis-state').hidden = true; $('#send-question').disabled = false; await call('chat:active', false); }
+  finally { pending.remove(); asking = false; renderBuddy(); $('#analysis-state').hidden = true; $('#send-question').disabled = false; await call('chat:active', false); }
 });
 $('#question').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!asking) $('#chat-form').requestSubmit(); } };
 $('#question').oninput = () => { if (Date.now() - activePing > 3000) { activePing = Date.now(); call('chat:active', true).catch(() => {}); } };
@@ -522,6 +612,11 @@ $('#correct-evidence').onclick=()=>{focusedEvidenceId=correctionFrame.id;$('#que
 window.companion.on('capture:stop', () => { stopRenderer(); if (state) { state.observation.observing = false; render(state); } });
 window.companion.on('capture:now', () => captureFrame(true).catch(error => toast(error.message)));
 window.companion.on('data:changed', render);
+window.companion.on('answer:ready', record => { if (record.world_id === state?.activeWorld) announceAnswer(record); });
+window.companion.on('buddy:checkin', message => {
+  if (!state?.compact || state.overlay.interactive || state.settings.mode !== 'together' || state.settings.ambientChat === false || !state.observation.observing || message.worldId !== state.activeWorld || message.sessionId !== state.observation.sessionId || $('#source-kind').value === 'video') return;
+  showBuddySpeech({ id: `presence-${Date.now()}`, worldId: message.worldId, text: message.text, ambient: true, automatic: true });
+});
 window.companion.on('window:changed', next => { if (next.compact && !next.overlay.interactive) $('#toast').hidden = true; render(next); });
 window.companion.on('window:error', toast);
 window.companion.on('chat:focus', () => { setView('play'); $('#question').focus(); });
