@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "hops-fleet-question",
+      "kind": "question",
+      "at": "2026-10-06T22:25:56Z",
+      "world": { "id": "anno-replay", "name": "홉 운송 평가", "game": "Anno 1800", "goal": "홉을 메인섬으로 운송하기" },
+      "question": "홉 재고가 7/75면 배 한 척으로 충분하다는 뜻이야?",
+      "current_evidence_id": "hops-after",
+      "evidence": [
+        { "id": "hops-before", "source": "video", "role": "recent", "file": "../../.local/bench/hops-before.jpg", "width": 1280, "height": 720, "captured_at": "2026-10-06T22:25:36Z", "video_time": 10 },
+        { "id": "hops-after", "source": "video", "role": "current", "file": "../../.local/bench/hops-after.jpg", "width": 1280, "height": 720, "captured_at": "2026-10-06T22:25:54Z", "video_time": 28 }
+      ],
+      "memories": [
+        { "id": "trial-plan", "world_id": "anno-replay", "kind": "note", "source": "user", "time": "2026-10-06T22:24:00Z", "payload": { "text": "지난번에 배 한 척은 시험안으로만 두었고 왕복 시간과 소비량은 아직 확인하지 않았어." } }
+      ],
+      "recent": [],
+      "expected": { "review": "재고와 적재량을 구분하고, 생산·소비량·왕복 시간 없이 필요한 척수를 확정하지 않기. 영상 당시 화면이라는 시점 유지." }
+    },
+    {
+      "id": "same-scene-silence",
+      "kind": "automatic",
+      "mode": "together",
+      "at": "2026-10-06T22:25:56Z",
+      "world": { "id": "anno-replay", "name": "정적 화면 평가", "game": "Anno 1800", "goal": "" },
+      "question": "확인한 새로운 게임 변화만 짧게 반응하고 변화가 없으면 침묵해.",
+      "current_evidence_id": "still-after",
+      "evidence": [
+        { "id": "still-before", "source": "video", "role": "recent", "file": "../../.local/bench/still-before.jpg", "width": 1280, "height": 720, "captured_at": "2026-10-06T22:25:36Z", "video_time": 10 },
+        { "id": "still-after", "source": "video", "role": "current", "file": "../../.local/bench/still-after.jpg", "width": 1280, "height": 720, "captured_at": "2026-10-06T22:25:54Z", "video_time": 28 }
+      ],
+      "memories": [],
+      "recent": [],
+      "expected": { "should_speak": false, "review": "실제로 같은 상태인 두 화면을 준비하고 불필요한 반응이 생기는지 평가." }
+    }
+  ]
+}

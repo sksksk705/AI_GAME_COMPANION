@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "data_source": "example-only",
+  "threshold": 0.8,
+  "repeats": 1,
+  "models": [
+    { "id": "typesafe/jev-1.13", "api": "decisions" },
+    { "id": "openai/gpt-4.1-nano", "api": "chat" },
+    { "id": "google/gemini-2.5-flash-lite", "api": "chat" },
+    { "id": "openai/gpt-6-luna", "api": "chat" }
+  ],
+  "cases": [
+    {
+      "id": "no-game-event",
+      "state": { "mode": "together", "observation_source": "synthetic-example", "player": { "busy": false, "talking": false }, "observations": { "gap": false, "readable": true, "before": "홉 재고 7", "after": "홉 재고 7", "game_event": null }, "recent_spoken_events": [] },
+      "expected": { "should_speak": false, "label_source": "example-author" }
+    },
+    {
+      "id": "confirmed-new-progress",
+      "state": { "mode": "together", "observation_source": "synthetic-example", "player": { "busy": false, "talking": false }, "observations": { "gap": false, "readable": true, "before": "시험 시설은 전력 연결 없음", "after": "같은 시험 시설의 전력 연결 표시 켜짐", "game_event": { "key": "test-facility:power-connected", "grounded": true } }, "recent_spoken_events": [] },
+      "expected": { "should_speak": true, "label_source": "example-author" }
+    },
+    {
+      "id": "player-is-busy",
+      "state": { "mode": "together", "observation_source": "synthetic-example", "player": { "busy": true, "talking": false }, "observations": { "gap": false, "readable": true, "before": "시험 시설은 전력 연결 없음", "after": "같은 시험 시설의 전력 연결 표시 켜짐", "game_event": { "key": "test-facility:power-connected", "grounded": true } }, "recent_spoken_events": [] },
+      "expected": { "should_speak": false, "label_source": "example-author" }
+    },
+    {
+      "id": "uncertain-small-ui",
+      "state": { "mode": "together", "observation_source": "synthetic-example", "player": { "busy": false, "talking": false }, "observations": { "gap": false, "readable": false, "before": "작은 숫자는 판독 불가", "after": "숫자가 늘어난 것 같지만 판독 불가", "game_event": { "key": "test-stock:possibly-increased", "grounded": false } }, "recent_spoken_events": [] },
+      "expected": { "should_speak": false, "label_source": "example-author" }
+    }
+  ]
+}

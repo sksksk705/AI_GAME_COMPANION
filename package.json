@@ -11,7 +11,9 @@
     "start": "node scripts/run.cjs",
     "test": "node scripts/run.cjs --test",
     "smoke": "node scripts/run.cjs --smoke",
-    "evaluate": "node scripts/run.cjs --evaluate"
+    "evaluate": "node scripts/run.cjs --evaluate",
+    "benchmark": "node scripts/companion-evaluation.cjs",
+    "judge:plan": "node scripts/judge-evaluation.cjs"
   },
   "devDependencies": {
     "electron": "44.5.1"

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { text, PLAN_STATES, transitionPlan } = require('./core.cjs');
 const { EXPERIENCE_TRANSITIONS, OUTCOMES, LIMITS, field, validateProposal, validateProposals, queryTerms, frameRefs, memoryForModel } = require('./learning.cjs');
+const { withinBudget, CONTEXT_LIMITS } = require('./stream-context.cjs');
 
 function openStore(directory) {
   fs.mkdirSync(path.join(directory, 'evidence'), { recursive: true });
@@ -50,14 +51,23 @@ function openStore(directory) {
     const recent = context(id);
     const selected = [...new Map([...search(id, question, true), ...experiences(id, 4), ...recent.filter(r => ['goal', 'plan', 'note'].includes(r.kind)).slice(0, 6)].map(r => [r.id, r])).values()].slice(0, 18);
     const unavailable = ref => { try { evidence(id, ref); return false; } catch { return true; } };
-    return { recent, memories: selected.map(r => memoryForModel(r, unavailable)) };
+    const bounded = withinBudget(selected.map(r => memoryForModel(r, unavailable)), CONTEXT_LIMITS.memoryCharacters);
+    return { recent, memories: bounded.items, omittedMemories: bounded.omitted };
   }
-  function analysisContext(id, question, evidenceId = null) {
+  function analysisContext(id, question, evidenceId = null, options = {}) {
     const result = promptContext(id, question);
     if (evidenceId) return { ...result, evidence: [evidence(id, evidenceId)] };
     const latest = db.prepare("SELECT id FROM records WHERE world_id=? AND kind='frame' AND deleted_at IS NULL AND COALESCE(json_extract(payload,'$.expired'),0)=0 ORDER BY created_at DESC,rowid DESC LIMIT 8").all(id).flatMap(r => { try { return [evidence(id, r.id)]; } catch { return []; } });
-    const prior = result.memories.filter(r => r.kind === 'experience').flatMap(r => r.payload.before_evidence || []).flatMap(ref => { try { return [evidence(id, ref)]; } catch { return []; } }).find(r => r.id !== latest[0]?.id);
-    return { ...result, evidence: latest.length ? [latest[0], ...(prior ? [prior] : latest.slice(1, 2))] : [] };
+    // Resolve every recalled reference through this world's store, including old answer images.
+    const recalled = [...new Set(result.memories.flatMap(frameRefs))].flatMap(ref => { try { return [evidence(id, ref)]; } catch { return []; } });
+    if (options.recentEvidence?.length) {
+      const current = options.recentEvidence.slice(-CONTEXT_LIMITS.recentFrames).map(f => evidence(id, f.id));
+      const currentIds = new Set(current.map(f => f.id));
+      const historical = recalled.filter(f => !currentIds.has(f.id)).slice(0, CONTEXT_LIMITS.evidenceFrames - current.length);
+      return { ...result, evidence: [...current.map((f, i) => ({ ...f, context_role: i === current.length - 1 ? 'current' : 'recent' })), ...historical.map(f => ({ ...f, context_role: 'recalled' }))] };
+    }
+    const prior = recalled.find(r => r.id !== latest[0]?.id);
+    return { ...result, evidence: latest.length ? [{ ...latest[0], context_role: 'record' }, ...(prior ? [{ ...prior, context_role: 'recalled' }] : latest.slice(1, 2))] : [] };
   }
   function add(id, kind, source, payload) {
     world(id);

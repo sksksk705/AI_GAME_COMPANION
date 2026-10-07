@@ -8,7 +8,14 @@ const { analyze } = require('../src/provider.cjs');
 app.setName('AI Game Companion');
 const label = process.argv.includes('after') ? 'after' : 'before';
 const onlyLearn=process.argv.includes('learn');
-if (!process.argv.includes('--live')) { console.log('실제 요청 평가: npm run evaluate -- --live before 또는 after'); app.exit(0); }
+const companionIndex = process.argv.indexOf('--companion');
+const companionManifest = companionIndex >= 0 ? process.argv[companionIndex + 1] : null;
+const judgesIndex = process.argv.indexOf('--judges');
+const judgesManifest = judgesIndex >= 0 ? process.argv[judgesIndex + 1] : null;
+if (judgesIndex >= 0 && !judgesManifest) { console.error('--judges 뒤에 판단 평가 JSON 경로가 필요해요.'); app.exit(1); }
+if (companionManifest && judgesManifest) { console.error('--companion과 --judges는 각각 실행해주세요.'); app.exit(1); }
+if (companionIndex >= 0 && !companionManifest) { console.error('--companion 뒤에 평가 JSON 경로가 필요해요.'); app.exit(1); }
+if (!process.argv.includes('--live')) { console.log('실제 요청 평가: npm run evaluate -- --live before/after, --live --companion <manifest.json>, 또는 --live --judges <manifest.json>'); app.exit(0); }
 if (!app.requestSingleInstanceLock()) { console.error('평가 전에 동료 앱을 닫아주세요.'); app.exit(1); }
 app.whenReady().then(async () => {
   let store;
@@ -20,6 +27,26 @@ app.whenReady().then(async () => {
     model=settings.model;
     const key = safeStorage.decryptString(fs.readFileSync(path.join(directory,'key.enc')));
     store = openStore(directory);
+    if (judgesManifest) {
+      const { loadJudgeSuite, runJudgeEvaluation } = require('./judge-evaluation.cjs');
+      const report = await runJudgeEvaluation({ suite: loadJudgeSuite(judgesManifest), key, store, maxRequests: settings.maxRequests });
+      const output = path.resolve(__dirname, '../.local', `judge-evaluation-${Date.now()}.json`);
+      fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, JSON.stringify(report, null, 2));
+      console.log(`판단 모델 비교 기록: ${output}`);
+      if (report.stopped) throw Error(`평가 중지: ${report.stopped}`);
+      return;
+    }
+    if (companionManifest) {
+      const { loadSuite, runEvaluation } = require('./companion-evaluation.cjs');
+      const suite = loadSuite(companionManifest);
+      const report = await runEvaluation({ suite, key, model, store, maxRequests: settings.maxRequests, profile: settings.profile });
+      const output = path.resolve(__dirname, '../.local', `companion-evaluation-${Date.now()}.json`);
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      fs.writeFileSync(output, JSON.stringify(report, null, 2));
+      console.log(`상용 API 비교 기록: ${output}`);
+      if (report.stopped) throw Error(`평가 중지: ${report.stopped}`);
+      return;
+    }
     const file=path.resolve(__dirname,'../.local/frame-28.jpg'), size=nativeImage.createFromPath(file).getSize();
     if (!size.width) throw Error('첨부 영상 00:28의 원본 프레임이 필요해요.');
     const evidence=[{id:'evaluation-video-28',source:'video',created_at:new Date().toISOString(),payload:{...size,videoTime:28,capturedAt:null},file}];
@@ -46,7 +73,7 @@ app.whenReady().then(async () => {
   }catch(error){console.error('EVALUATION FAILED',String(error.message).replace(/sk-or-[a-zA-Z0-9-]+/g,'[redacted]')); process.exitCode=1;}
   finally{
     const directory=path.resolve(__dirname,'../.local'); fs.mkdirSync(directory,{recursive:true});
-    fs.writeFileSync(path.join(directory,`evaluation-${label}${onlyLearn?'-learn':''}.json`),JSON.stringify({model,reports},null,2));
+    if (!companionManifest && !judgesManifest) fs.writeFileSync(path.join(directory,`evaluation-${label}${onlyLearn?'-learn':''}.json`),JSON.stringify({model,reports},null,2));
     store?.close(); app.exit(process.exitCode||0);
   }
 });

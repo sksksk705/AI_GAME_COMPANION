@@ -10,6 +10,9 @@ const provider = require('./provider.cjs');
 const { EXPERIENCE_STATES, EXPERIENCE_TRANSITIONS, OUTCOMES } = require('./learning.cjs');
 const buddy = require('./buddy.cjs');
 const reactions = require('./reactions.cjs');
+const { recentFrames } = require('./stream-context.cjs');
+const { automaticResponse } = require('./proactivity.cjs');
+const { requestSession } = require('./api-session.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'companion', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 const smoke = process.argv.includes('--smoke');
@@ -207,8 +210,9 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
   const latest = frames.at(-1);
   const pair = automatic && settings.mode === 'together' ? reactions.comparisonFrames(frames) : null;
   if (automatic && settings.mode === 'together' && !pair) return null;
-  if (!pair && latest && Date.now() - Date.parse(latest.capturedAt) < 10000) saveFrame(latest);
-  const { evidence: contextEvidence, recent, memories } = automatic && settings.mode === 'together' ? store.promptContext(world.id, world.goal) : store.analysisContext(world.id, question || world.goal, evidenceId);
+  const sceneFrames = !automatic && !evidenceId ? recentFrames(frames).map(saveFrame) : [];
+  if (!pair && !evidenceId && latest && Date.now() - Date.parse(latest.capturedAt) < 10000 && (automatic || latest.source === 'video')) saveFrame(latest);
+  const { evidence: contextEvidence, recent, memories, omittedMemories } = automatic && settings.mode === 'together' ? store.promptContext(world.id, world.goal) : store.analysisContext(world.id, question || world.goal, evidenceId, { recentEvidence: sceneFrames });
   let evidence = contextEvidence;
   if (pair) {
     try { evidence = pair.map(frame => store.evidence(world.id, saveFrame(frame).id)); }
@@ -219,27 +223,35 @@ async function runAnalysis(question, automatic = false, evidenceId = null) {
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
   const current = { controller, automatic, worldId: world.id };
   job = current; lastAnalysis = Date.now();
-  const usageId = store.reserveUsage(settings.model, { status: 'sent', type: automatic ? 'automatic' : 'question' });
-  let returnedUsage = false;
+  const isValid = () => !controller.signal.aborted && epoch === contextEpoch && activeWorld === world.id && store.world(world.id).revision === world.revision;
+  const runStage = requestSession({ store, model: settings.model, type: automatic ? 'automatic' : 'question', signal: controller.signal,
+    used: usedToday, limit: () => settings.maxRequests, isValid, onExhausted: () => { remoteBlocked = true; } });
+  const parameters = { key, model: settings.model, world, question, evidence, memories, omittedMemories, profile: settings.profile, mode: settings.mode, automatic, recent, signal: controller.signal };
+  const deliveryReason = answer => {
+    if (!isValid()) return 'context-changed';
+    const currentFrame = observing ? frames.at(-1) : null;
+    const sampleStable = !!(latest && currentFrame && frameDifference(latest.signature, currentFrame.signature) <= 0.075);
+    return !win.isVisible() || win.isMinimized() ? 'hidden' : composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(answer.event_key) ? 'dismissed' : proactiveDecision(answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: store.context(world.id), live: currentFrame });
+  };
   current.promise = (async () => {
     try {
-      const result = await provider.analyze({ key, model: settings.model, world, question, evidence, memories, profile: settings.profile, mode: settings.mode, automatic, recent, signal: controller.signal });
-      const stillValid = !controller.signal.aborted && epoch === contextEpoch && activeWorld === world.id && store.world(world.id).revision === world.revision;
-      store.updateUsage(usageId, { status: stillValid ? 'completed' : 'discarded', usage: result.usage, providerId: result.providerId }); returnedUsage = true;
-      if (!stillValid) throw new Error('월드나 계획이 바뀌어 이전 답변을 폐기했어요.');
-      remoteBlocked = false;
-      const sampleStable = latest && frames.at(-1) && frameDifference(latest.signature, frames.at(-1).signature) <= 0.075;
-      const suppressed = automatic ? (!win.isVisible() || win.isMinimized() ? 'hidden' : composerBusy || Date.now() - lastInteraction < 15000 ? 'user-active' : dismissedEvents.has(result.answer.event_key) ? 'dismissed' : proactiveDecision(result.answer, { mode: settings.mode, goal: world.goal, status: world.state.status, sampleStable, evidence, records: store.context(world.id), live: observing ? frames.at(-1) : null })) : null;
+      const result = automatic ? await automaticResponse({
+        assess: () => runStage('assessment', () => provider.assess(parameters)),
+        admit: candidate => deliveryReason(candidate) || (usedToday() >= settings.maxRequests ? 'request-limit' : null),
+        generate: assessment => runStage('response', () => provider.analyze({ ...parameters, assessment }))
+      }) : await runStage('response', () => provider.analyze(parameters));
+      if (!isValid()) throw new Error('월드나 계획이 바뀌어 이전 답변을 폐기했어요.');
+      remoteBlocked = usedToday() >= settings.maxRequests;
+      const suppressed = automatic ? result.suppressed || deliveryReason(result.answer) : null;
       if (automatic) { silenceCount = suppressed ? silenceCount + 1 : 0; nextAutomaticAt = Date.now() + reactions.nextDelay(settings.analysisInterval, silenceCount); }
       const observedAt = automatic && settings.mode === 'together' ? evidence.find(frame => frame.id === result.answer.observed_change?.after_evidence_id)?.payload.capturedAt || null : null;
-      const record = store.saveAnswer(world.id, 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, reaction_observed_at: observedAt, observation_session: automatic ? latest?.sessionId : null, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...memories.map(r => r.id), ...conversation(recent).map(r => r.id)] });
+      const record = store.saveAnswer(world.id, 'model', { question: automatic ? null : question, ...result.answer, automatic, delivered: !suppressed, suppressed, assessment: result.assessment || null, generated: result.generated ?? true, reaction_observed_at: observedAt, observation_session: automatic ? latest?.sessionId : null, contextRevision: world.revision, evidence: evidence.map(f => f.id), memory_refs: [...result.contextRefs.memories, ...result.contextRefs.conversation] });
       emit('data:changed', snapshot());
       if (!suppressed) emit('answer:ready', publicRecord(record));
       return publicRecord(record);
     } catch (error) {
       if (!controller.signal.aborted || timedOut) remoteBlocked = true;
       const message = controller.signal.aborted ? '요청이 취소되거나 시간이 초과됐어요. 이미 전송된 요청에는 비용이 발생할 수 있어요. 자동 재전송하지 않아요.' : error.message;
-      if (!returnedUsage) store.updateUsage(usageId, { status: 'unknown' });
       if (!automatic || !controller.signal.aborted || timedOut) emit('analysis:error', message);
       throw new Error(message);
     } finally { clearTimeout(timeout); if (job === current) job = null; }

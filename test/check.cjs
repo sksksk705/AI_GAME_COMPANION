@@ -128,6 +128,8 @@ async function check() {
     await require('./learning.cjs')();
     require('./buddy.cjs')();
     await require('./reactions.cjs')();
+    await require('./api-companion.cjs')();
+    await require('./judge-evaluation.cjs')();
     console.log('PASS: natural dialogue context, generic games, companion preferences, silence/freshness/focus/cooldown/deduplication, fleet boundaries, plan lifecycle, memory isolation/correction, SQLite restart, quota, provider validation/cancellation.');
     console.log('Provider responses above are fixtures; no paid API or actual game capture was tested.');
   } finally {
